@@ -1,0 +1,80 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // --- Helper Functions ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    
+    // Check if the current user is the owner of the resource
+    function isOwner(userId) {
+      return request.auth != null && request.auth.uid == userId;
+    }
+    
+    // Check if the current user is an admin
+    function isAdmin() {
+      return request.auth != null && 
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid));
+    }
+
+    // --- COLLECTION RULES ---
+
+    // 1. MODULES
+    // Students/Admins must be able to READ the list of modules.
+    match /modules/{moduleId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin(); // Only admins create modules
+    }
+
+    // 2. ASSESSMENTS
+    // Students/Admins must be able to READ practice papers, tests, exams.
+    match /assessments/{assessmentId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+      
+      // Allow access to questions sub-collection
+      // IMPORTANT: This was likely the cause of the error. 
+      // The previous rules had a complex check on the parent document which might fail if permissions aren't perfect.
+      // Now we explicitly allow admins to read/write questions.
+      match /questions/{questionId} {
+        allow read: if isSignedIn();
+        allow write: if isAdmin();
+      }
+    }
+
+    // 3. USERS COLLECTION
+    // Users must be able to READ their own profile (for points, sub status).
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow write: if isAdmin(); 
+      // Allow user to update their own profile (e.g. settings)
+      allow update: if isOwner(userId);
+    }
+
+    // 4. USER MODULES (The "My Modules" list)
+    // Critical: Students must be able to READ and WRITE their own module list.
+    match /users/{userId}/modules/{docId} {
+      allow read, write: if isOwner(userId);
+    }
+
+    // 5. ANNOUNCEMENTS
+    match /announcements/{announcementId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    // 6. UNIVERSITIES
+    match /universities/{universityId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    // 7. ADMINS (Secure)
+    match /admins/{userId} {
+      // Admins can read their own profile to verify their role
+      allow read: if isOwner(userId);
+      allow write: if false; 
+    }
+  }
+}

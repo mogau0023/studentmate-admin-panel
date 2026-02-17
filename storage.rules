@@ -1,0 +1,36 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    
+    // --- Helper Functions ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    
+    function isAdmin() {
+      return request.auth != null && 
+        firestore.exists(/databases/(default)/documents/admins/$(request.auth.uid));
+    }
+
+    // --- RULES ---
+
+    // 1. ASSESSMENTS (PDFs)
+    match /assessments/{allPaths=**} {
+      allow read: if true; // Public read for students
+      allow write: if isAdmin();
+    }
+
+    // 2. QUESTION & ANSWER IMAGES
+    // Matches patterns like: questions/assessmentId/timestamp_filename.jpg
+    match /questions/{allPaths=**} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // 3. UNIVERSITY LOGOS
+    match /university-logos/{allPaths=**} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+  }
+}
