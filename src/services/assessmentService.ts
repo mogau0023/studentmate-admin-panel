@@ -128,14 +128,20 @@ export const addQuestion = async (
   title: string,
   marks: number,
   order: number,
-  contentFile: File,
+  contentFile?: File | null,
+  content?: string,
   answerFile?: File | null,
+  answerText?: string,
   videoUrl?: string
 ) => {
-  // Upload Content Image
-  const contentStorageRef = ref(storage, `questions/${assessmentId}/${Date.now()}_content_${contentFile.name}`);
-  await uploadBytes(contentStorageRef, contentFile);
-  const contentUrl = await getDownloadURL(contentStorageRef);
+  let contentUrl = '';
+  
+  // Upload Content Image if provided
+  if (contentFile) {
+    const contentStorageRef = ref(storage, `questions/${assessmentId}/${Date.now()}_content_${contentFile.name}`);
+    await uploadBytes(contentStorageRef, contentFile);
+    contentUrl = await getDownloadURL(contentStorageRef);
+  }
 
   let answerUrl = '';
   if (answerFile) {
@@ -144,17 +150,17 @@ export const addQuestion = async (
     answerUrl = await getDownloadURL(answerStorageRef);
   }
 
-  const docRef = await addDoc(collection(db, COLLECTION_NAME, assessmentId, 'questions'), {
+  await addDoc(collection(db, COLLECTION_NAME, assessmentId, 'questions'), {
     title,
     marks,
     order,
-    contentUrl,
+    contentUrl: contentUrl || null,
+    content: content || null,
     answerUrl: answerUrl || null,
+    answerText: answerText || null,
     videoUrl: videoUrl || null,
     createdAt: serverTimestamp()
   });
-
-  return docRef.id;
 };
 
 export const deleteQuestion = async (assessmentId: string, question: Question) => {

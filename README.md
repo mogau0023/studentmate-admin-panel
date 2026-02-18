@@ -23,9 +23,10 @@ Built with **React**, **TypeScript**, **Tailwind CSS**, and **Firebase** (Firest
 - **Three Types**: Manage **Exams**, **Tests**, and **Supplementary Exams** separately.
 - **Flexible Content**:
     - **PDF Upload**: Upload full question papers as PDFs.
+    - **Bulk Import (New)**: Upload a text-based Exam PDF to automatically extract questions, marks, and answers (if memo is included).
     - **Question Builder**: Create assessments question-by-question.
-        - Upload **Question Images** (for complex math/diagrams).
-        - Upload **Answer Images** (hidden by default in student app).
+        - Support for **Text Content** (extracted from PDF) or **Image Content** (screenshots).
+        - Upload **Answer Images** or use **Text Answers**.
         - Add **Video Solution URLs** (YouTube/Vimeo links).
         - Assign **Marks** per question.
 

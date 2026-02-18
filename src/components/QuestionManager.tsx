@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Trash2, Image as ImageIcon, Video, Check } from 'lucide-react';
+import { Plus, Trash2, Image as ImageIcon, Video, Check, FileText, Upload, Save, X } from 'lucide-react';
 import { Question } from '../types';
 import { getQuestions, addQuestion, deleteQuestion } from '../services/assessmentService';
 import Modal from './Modal';
+import { parsePdf, extractQuestionsFromText, ExtractedQuestion } from '../utils/pdfParser';
 
 interface QuestionManagerProps {
   assessmentId: string;
@@ -14,15 +15,21 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
   const [questions, setQuestions] = useState<Question[]>([]);
   const [loading, setLoading] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isBulkModalOpen, setIsBulkModalOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
-  // Form states
+  // Manual Form states
   const [title, setTitle] = useState('');
   const [marks, setMarks] = useState(0);
   const [order, setOrder] = useState(1);
   const [contentFile, setContentFile] = useState<File | null>(null);
   const [answerFile, setAnswerFile] = useState<File | null>(null);
   const [videoUrl, setVideoUrl] = useState('');
+
+  // Bulk Upload states
+  const [bulkFile, setBulkFile] = useState<File | null>(null);
+  const [extractedQuestions, setExtractedQuestions] = useState<ExtractedQuestion[]>([]);
+  const [parsing, setParsing] = useState(false);
 
   useEffect(() => {
     fetchQuestions();
@@ -33,7 +40,6 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
     try {
       const data = await getQuestions(assessmentId);
       setQuestions(data);
-      // Auto-increment order
       if (data.length > 0) {
         setOrder(data.length + 1);
       }
@@ -66,7 +72,9 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
         marks,
         order,
         contentFile,
+        undefined, // content
         answerFile,
+        undefined, // answerText
         videoUrl
       );
       setIsModalOpen(false);
@@ -76,6 +84,69 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
     } finally {
       setSubmitting(false);
     }
+  };
+
+  const handleBulkFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      setBulkFile(e.target.files[0]);
+      setParsing(true);
+      try {
+        const text = await parsePdf(e.target.files[0]);
+        const parsed = extractQuestionsFromText(text);
+        setExtractedQuestions(parsed);
+      } catch (error) {
+        console.error('Error parsing PDF:', error);
+        alert('Failed to parse PDF. Please ensure it is a valid text-based PDF.');
+      } finally {
+        setParsing(false);
+      }
+    }
+  };
+
+  const handleSaveBulk = async () => {
+    if (extractedQuestions.length === 0) return;
+
+    setSubmitting(true);
+    try {
+      // Process sequentially to maintain order if needed, or parallel for speed
+      // Using sequential to ensure order is respected and less chance of rate limiting
+      let currentOrder = questions.length > 0 ? questions.length + 1 : 1;
+
+      for (const q of extractedQuestions) {
+        await addQuestion(
+          assessmentId,
+          `Question ${q.number}`,
+          q.marks,
+          currentOrder++,
+          undefined, // contentFile
+          q.text,    // content (text)
+          undefined, // answerFile
+          undefined, // answerText
+          undefined  // videoUrl
+        );
+      }
+      setIsBulkModalOpen(false);
+      setExtractedQuestions([]);
+      setBulkFile(null);
+      fetchQuestions();
+    } catch (error) {
+      console.error('Error saving bulk questions:', error);
+      alert('Error saving questions. See console for details.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleRemoveExtracted = (index: number) => {
+    const newQuestions = [...extractedQuestions];
+    newQuestions.splice(index, 1);
+    setExtractedQuestions(newQuestions);
+  };
+
+  const handleUpdateExtracted = (index: number, field: keyof ExtractedQuestion, value: any) => {
+    const newQuestions = [...extractedQuestions];
+    newQuestions[index] = { ...newQuestions[index], [field]: value };
+    setExtractedQuestions(newQuestions);
   };
 
   const handleDelete = async (question: Question) => {
@@ -96,7 +167,7 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
 
         <span className="hidden sm:inline-block sm:align-middle sm:h-screen" aria-hidden="true">&#8203;</span>
 
-        <div className="inline-block align-bottom bg-white rounded-lg text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-4xl sm:w-full">
+        <div className="inline-block align-bottom bg-white rounded-lg text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-5xl sm:w-full">
           <div className="bg-white px-4 pt-5 pb-4 sm:p-6 sm:pb-4">
             <div className="flex justify-between items-center mb-6">
               <div>
@@ -104,16 +175,23 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
                   Manage Questions: {assessmentTitle}
                 </h3>
                 <p className="mt-1 text-sm text-gray-500">
-                  Add questions, marks, and solutions.
+                  Add questions via image upload or auto-parse from PDF.
                 </p>
               </div>
               <div className="flex space-x-3">
+                <button
+                  onClick={() => setIsBulkModalOpen(true)}
+                  className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg flex items-center space-x-2"
+                >
+                  <FileText className="h-5 w-5" />
+                  <span>Bulk Upload PDF</span>
+                </button>
                 <button
                   onClick={handleOpenModal}
                   className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg flex items-center space-x-2"
                 >
                   <Plus className="h-5 w-5" />
-                  <span>Add Question</span>
+                  <span>Add Manual</span>
                 </button>
                 <button
                   onClick={onClose}
@@ -124,12 +202,12 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
               </div>
             </div>
 
-            <div className="bg-gray-50 rounded-lg min-h-[400px] p-4">
+            <div className="bg-gray-50 rounded-lg min-h-[400px] p-4 max-h-[70vh] overflow-y-auto">
               {loading ? (
                 <div className="text-center py-10">Loading questions...</div>
               ) : questions.length === 0 ? (
                 <div className="text-center py-10 text-gray-500">
-                  No questions added yet. Click "Add Question" to start.
+                  No questions added yet. Click "Add Manual" or "Bulk Upload PDF" to start.
                 </div>
               ) : (
                 <div className="space-y-6">
@@ -159,7 +237,13 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
                         <div className="mb-4">
                           <p className="text-xs text-gray-500 mb-1 uppercase font-semibold">Question Content</p>
                           <div className="border border-gray-100 rounded bg-gray-50 p-2">
-                            <img src={q.contentUrl} alt={q.title} className="max-w-full h-auto max-h-64 object-contain" />
+                            {q.contentUrl ? (
+                              <img src={q.contentUrl} alt={q.title} className="max-w-full h-auto max-h-64 object-contain" />
+                            ) : q.content ? (
+                              <div className="whitespace-pre-wrap text-gray-800 font-serif">{q.content}</div>
+                            ) : (
+                              <span className="text-gray-400 italic">No content available</span>
+                            )}
                           </div>
                         </div>
 
@@ -172,6 +256,8 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
                                 <span className="text-sm">Answer Image Uploaded</span>
                                 <a href={q.answerUrl} target="_blank" rel="noreferrer" className="text-blue-500 text-xs hover:underline">(View)</a>
                               </div>
+                            ) : q.answerText ? (
+                                <div className="text-sm text-gray-700">{q.answerText}</div>
                             ) : (
                               <span className="text-sm text-gray-400">No answer provided</span>
                             )}
@@ -200,10 +286,11 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
         </div>
       </div>
 
+      {/* Manual Add Modal */}
       <Modal
         isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}
-        title="Add New Question"
+        title="Add New Question (Manual)"
       >
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
@@ -298,6 +385,104 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
           </div>
         </form>
       </Modal>
+
+      {/* Bulk Upload Modal */}
+      {isBulkModalOpen && (
+        <div className="fixed inset-0 z-[60] overflow-y-auto">
+          <div className="flex items-center justify-center min-h-screen px-4 pt-4 pb-20 text-center sm:block sm:p-0">
+            <div className="fixed inset-0 transition-opacity" aria-hidden="true">
+              <div className="absolute inset-0 bg-gray-500 opacity-75"></div>
+            </div>
+            <span className="hidden sm:inline-block sm:align-middle sm:h-screen" aria-hidden="true">&#8203;</span>
+            <div className="inline-block align-bottom bg-white rounded-lg text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-4xl sm:w-full">
+              <div className="bg-white px-4 pt-5 pb-4 sm:p-6 sm:pb-4">
+                <div className="flex justify-between items-center mb-6">
+                  <h3 className="text-lg font-medium text-gray-900">Bulk Upload from PDF</h3>
+                  <button onClick={() => setIsBulkModalOpen(false)} className="text-gray-400 hover:text-gray-500">
+                    <X className="h-6 w-6" />
+                  </button>
+                </div>
+
+                <div className="space-y-6">
+                  {/* File Upload Area */}
+                  <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:bg-gray-50 transition-colors">
+                    <input
+                      type="file"
+                      accept=".pdf"
+                      onChange={handleBulkFileChange}
+                      className="hidden"
+                      id="bulk-upload"
+                    />
+                    <label htmlFor="bulk-upload" className="cursor-pointer block">
+                      <Upload className="mx-auto h-12 w-12 text-gray-400" />
+                      <p className="mt-2 text-sm text-gray-600">
+                        {bulkFile ? bulkFile.name : "Click to upload Exam PDF"}
+                      </p>
+                      <p className="text-xs text-gray-500 mt-1">PDFs with selectable text only</p>
+                    </label>
+                  </div>
+
+                  {parsing && (
+                    <div className="text-center py-4 text-blue-600 font-medium">
+                      Parsing PDF... Please wait.
+                    </div>
+                  )}
+
+                  {/* Extracted Questions Preview */}
+                  {extractedQuestions.length > 0 && (
+                    <div className="mt-6">
+                      <div className="flex justify-between items-center mb-4">
+                        <h4 className="font-medium text-gray-900">Extracted Questions ({extractedQuestions.length})</h4>
+                        <button
+                          onClick={handleSaveBulk}
+                          disabled={submitting}
+                          className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg flex items-center space-x-2 text-sm"
+                        >
+                          <Save className="h-4 w-4" />
+                          <span>{submitting ? 'Saving...' : 'Save All to Database'}</span>
+                        </button>
+                      </div>
+
+                      <div className="space-y-4 max-h-[50vh] overflow-y-auto pr-2">
+                        {extractedQuestions.map((q, index) => (
+                          <div key={index} className="bg-gray-50 p-4 rounded-lg border border-gray-200">
+                            <div className="flex justify-between items-start mb-2">
+                              <div className="flex items-center space-x-2">
+                                <span className="bg-blue-100 text-blue-800 text-xs font-bold px-2 py-1 rounded">
+                                  #{q.number}
+                                </span>
+                                <input
+                                  type="number"
+                                  value={q.marks}
+                                  onChange={(e) => handleUpdateExtracted(index, 'marks', parseInt(e.target.value))}
+                                  className="w-20 text-xs border-gray-300 rounded p-1"
+                                  placeholder="Marks"
+                                />
+                                <span className="text-xs text-gray-500">marks</span>
+                              </div>
+                              <button
+                                onClick={() => handleRemoveExtracted(index)}
+                                className="text-red-500 hover:text-red-700"
+                              >
+                                <X className="h-4 w-4" />
+                              </button>
+                            </div>
+                            <textarea
+                              value={q.text}
+                              onChange={(e) => handleUpdateExtracted(index, 'text', e.target.value)}
+                              className="w-full text-sm border-gray-300 rounded p-2 h-24 font-serif"
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

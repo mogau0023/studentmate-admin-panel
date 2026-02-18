@@ -33,9 +33,11 @@ export interface Assessment {
 export interface Question {
   questionId: string;
   title: string;
-  contentUrl: string; // Image URL of the question
-  answerUrl?: string; // Image URL of the answer (optional)
-  videoUrl?: string; // YouTube/Vimeo link (optional)
+  contentUrl?: string; // Image URL of the question (optional if content is provided)
+  content?: string;    // Text content of the question
+  answerUrl?: string;  // Image URL of the answer (optional)
+  answerText?: string; // Text content of the answer (optional)
+  videoUrl?: string;   // YouTube/Vimeo link (optional)
   marks: number;
   order: number;
   createdAt: Timestamp;
