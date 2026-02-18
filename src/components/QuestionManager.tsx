@@ -3,7 +3,7 @@ import { Plus, Trash2, Image as ImageIcon, Video, Check, FileText, Upload, Save,
 import { Question } from '../types';
 import { getQuestions, addQuestion, deleteQuestion } from '../services/assessmentService';
 import Modal from './Modal';
-import { parsePdf, extractQuestionsFromText, ExtractedQuestion } from '../utils/pdfParser';
+import { parsePdf, ExtractedQuestion } from '../utils/pdfParser';
 
 interface QuestionManagerProps {
   assessmentId: string;
@@ -91,12 +91,11 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
       setBulkFile(e.target.files[0]);
       setParsing(true);
       try {
-        const text = await parsePdf(e.target.files[0]);
-        const parsed = extractQuestionsFromText(text);
+        const parsed = await parsePdf(e.target.files[0]);
         setExtractedQuestions(parsed);
       } catch (error) {
         console.error('Error parsing PDF:', error);
-        alert('Failed to parse PDF. Please ensure it is a valid text-based PDF.');
+        alert('Failed to parse PDF. Please ensure it is a valid PDF.');
       } finally {
         setParsing(false);
       }
@@ -108,18 +107,23 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
 
     setSubmitting(true);
     try {
-      // Process sequentially to maintain order if needed, or parallel for speed
-      // Using sequential to ensure order is respected and less chance of rate limiting
+      // Process sequentially to maintain order if needed
       let currentOrder = questions.length > 0 ? questions.length + 1 : 1;
 
       for (const q of extractedQuestions) {
+        // Convert Blob to File if present
+        let contentFile: File | undefined = undefined;
+        if (q.imageBlob) {
+          contentFile = new File([q.imageBlob], `question_${q.number}.jpg`, { type: 'image/jpeg' });
+        }
+
         await addQuestion(
           assessmentId,
           `Question ${q.number}`,
           q.marks,
           currentOrder++,
-          undefined, // contentFile
-          q.text,    // content (text)
+          contentFile,
+          q.text,    // content (text description or fallback)
           undefined, // answerFile
           undefined, // answerText
           undefined  // videoUrl
@@ -467,11 +471,23 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
                                 <X className="h-4 w-4" />
                               </button>
                             </div>
-                            <textarea
-                              value={q.text}
-                              onChange={(e) => handleUpdateExtracted(index, 'text', e.target.value)}
-                              className="w-full text-sm border-gray-300 rounded p-2 h-24 font-serif"
-                            />
+                            
+                            {/* Image Preview instead of Text Area */}
+                            {q.imageBlob ? (
+                              <div className="border border-gray-300 rounded p-2 bg-white flex justify-center">
+                                <img 
+                                  src={URL.createObjectURL(q.imageBlob)} 
+                                  alt={`Question ${q.number}`} 
+                                  className="max-w-full max-h-64 object-contain"
+                                />
+                              </div>
+                            ) : (
+                               <textarea
+                                value={q.text}
+                                onChange={(e) => handleUpdateExtracted(index, 'text', e.target.value)}
+                                className="w-full text-sm border-gray-300 rounded p-2 h-24 font-serif"
+                              />
+                            )}
                           </div>
                         ))}
                       </div>
