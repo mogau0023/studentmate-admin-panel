@@ -21,12 +21,24 @@ const AssessmentManager = ({ type, title }: AssessmentManagerProps) => {
   const [selectedModuleId, setSelectedModuleId] = useState<string>('');
   const [searchTerm, setSearchTerm] = useState('');
   const [assessments, setAssessments] = useState<Assessment[]>([]);
+  const [showDropdown, setShowDropdown] = useState(false);
 
   useEffect(() => {
     if (selectedModuleId) {
-       setSearchTerm(''); // Clear search term once a module is selected
+       // When selected, keep the name in the search box but close dropdown
+       // We can't easily map ID back to name without finding it, but that's fine
+       setShowDropdown(false);
     }
   }, [selectedModuleId]);
+
+  // Update dropdown visibility when searching
+  useEffect(() => {
+    if (searchTerm && !selectedModuleId) {
+        setShowDropdown(true);
+    } else if (!searchTerm) {
+        setShowDropdown(false);
+    }
+  }, [searchTerm, selectedModuleId]);
   const [loading, setLoading] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -138,13 +150,15 @@ const AssessmentManager = ({ type, title }: AssessmentManagerProps) => {
 
   const handleModuleSelect = (code: string) => {
     setSelectedModuleId(code);
-    setSearchTerm(''); // Clear search term to hide dropdown
+    setSearchTerm(''); // Clear search term to allow clear button to show
+    setShowDropdown(false);
   };
 
   const handleClearSelection = () => {
     setSelectedModuleId('');
     setSearchTerm('');
     setAssessments([]);
+    setShowDropdown(false);
   };
 
   return (
@@ -199,10 +213,11 @@ const AssessmentManager = ({ type, title }: AssessmentManagerProps) => {
                     placeholder="Type to search (e.g. SMTH011)..."
                     value={searchTerm}
                     onChange={(e) => setSearchTerm(e.target.value)}
+                    onFocus={() => { if(searchTerm) setShowDropdown(true); }}
                     className="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
                   />
                   
-                  {searchTerm && (
+                  {showDropdown && (
                     <div className="absolute z-10 mt-1 w-full bg-white shadow-lg max-h-60 rounded-md py-1 text-base ring-1 ring-black ring-opacity-5 overflow-auto focus:outline-none sm:text-sm">
                       {filteredModules.length === 0 ? (
                         <div className="cursor-default select-none relative py-2 px-4 text-gray-700">No matching modules found</div>
