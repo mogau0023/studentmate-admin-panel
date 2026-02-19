@@ -126,7 +126,9 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
           q.text,    // content (text description or fallback)
           undefined, // answerFile
           undefined, // answerText
-          undefined  // videoUrl
+          undefined, // videoUrl
+          q.page,    // page
+          q.coordinates // coordinates
         );
       }
       setIsBulkModalOpen(false);

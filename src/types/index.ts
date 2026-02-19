@@ -40,6 +40,12 @@ export interface Question {
   videoUrl?: string;   // YouTube/Vimeo link (optional)
   marks: number;
   order: number;
+  // New fields for PDF parsing
+  page?: number;       // Page number in the original PDF
+  coordinates?: {      // Coordinates for rendering/cropping
+    yStart: number;
+    yEnd: number;
+  };
   createdAt: Timestamp;
 }
 

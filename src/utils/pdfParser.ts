@@ -10,6 +10,8 @@ export interface ExtractedQuestion {
   marks: number;
   answerText?: string;
   imageBlob?: Blob; // New: Image representation of the question
+  page: number;
+  coordinates: { yStart: number; yEnd: number };
   subQuestions?: { number: string; text: string; marks: number }[];
 }
 
@@ -109,7 +111,12 @@ export const parsePdf = async (file: File): Promise<ExtractedQuestion[]> => {
             number: q.number,
             text: `(Image Extracted from Page ${i})`,
             marks: 0, // Default, user can edit
-            imageBlob: blob
+            imageBlob: blob,
+            page: i,
+            coordinates: {
+              yStart: startY / 2.0, // Normalize back to PDF scale (approx)
+              yEnd: endY / 2.0
+            }
           });
           currentQuestionNumber = q.number;
         }

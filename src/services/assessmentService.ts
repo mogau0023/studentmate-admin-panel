@@ -132,7 +132,9 @@ export const addQuestion = async (
   content?: string,
   answerFile?: File | null,
   answerText?: string,
-  videoUrl?: string
+  videoUrl?: string,
+  page?: number,
+  coordinates?: { yStart: number; yEnd: number }
 ) => {
   let contentUrl = '';
   
@@ -159,6 +161,8 @@ export const addQuestion = async (
     answerUrl: answerUrl || null,
     answerText: answerText || null,
     videoUrl: videoUrl || null,
+    page: page || null,
+    coordinates: coordinates || null,
     createdAt: serverTimestamp()
   });
 };
