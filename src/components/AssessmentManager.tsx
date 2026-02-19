@@ -21,6 +21,12 @@ const AssessmentManager = ({ type, title }: AssessmentManagerProps) => {
   const [selectedModuleId, setSelectedModuleId] = useState<string>('');
   const [searchTerm, setSearchTerm] = useState('');
   const [assessments, setAssessments] = useState<Assessment[]>([]);
+
+  useEffect(() => {
+    if (selectedModuleId) {
+       setSearchTerm(''); // Clear search term once a module is selected
+    }
+  }, [selectedModuleId]);
   const [loading, setLoading] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -52,12 +58,9 @@ const AssessmentManager = ({ type, title }: AssessmentManagerProps) => {
         try {
           const data = await getModulesByUniversity(selectedUniversityId);
           setModules(data);
-          if (data.length > 0) {
-            setSelectedModuleId(data[0].code); // Use module code (e.g., SMTH011) instead of ID
-          } else {
-            setSelectedModuleId('');
-            setAssessments([]);
-          }
+          setSelectedModuleId(''); // Reset selection on uni change
+          setSearchTerm('');
+          setAssessments([]);
         } catch (error) {
           console.error('Error fetching modules:', error);
         }
@@ -126,10 +129,23 @@ const AssessmentManager = ({ type, title }: AssessmentManagerProps) => {
     }
   };
 
-  const filteredModules = modules.filter(mod => 
-    mod.code.toLowerCase().includes(searchTerm.toLowerCase()) || 
-    mod.name.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  const filteredModules = searchTerm 
+    ? modules.filter(mod => 
+        mod.code.toLowerCase().includes(searchTerm.toLowerCase()) || 
+        mod.name.toLowerCase().includes(searchTerm.toLowerCase())
+      )
+    : [];
+
+  const handleModuleSelect = (code: string) => {
+    setSelectedModuleId(code);
+    setSearchTerm(''); // Clear search term to hide dropdown
+  };
+
+  const handleClearSelection = () => {
+    setSelectedModuleId('');
+    setSearchTerm('');
+    setAssessments([]);
+  };
 
   return (
     <div>
@@ -170,30 +186,41 @@ const AssessmentManager = ({ type, title }: AssessmentManagerProps) => {
             </select>
           </div>
           <div className="flex-1">
-            <label className="block text-sm font-medium text-gray-700 mb-1">Select Module</label>
-            <div className="space-y-2">
-              <input
-                type="text"
-                placeholder="Search module code or name..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
-              />
-              <select
-                value={selectedModuleId}
-                onChange={(e) => setSelectedModuleId(e.target.value)}
-                className="block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm rounded-md border"
-                disabled={!selectedUniversityId}
-                size={5} // Show multiple options to make it easier to pick from filtered list
-              >
-                {filteredModules.length === 0 && <option value="">No matching modules</option>}
-                {filteredModules.map((mod) => (
-                  <option key={mod.moduleId} value={mod.code}>
-                    {mod.code} - {mod.name}
-                  </option>
-                ))}
-              </select>
-            </div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Search Module</label>
+              {selectedModuleId ? (
+                 <div className="p-2 bg-blue-50 text-blue-800 rounded text-sm flex justify-between items-center border border-blue-200">
+                   <span>Selected: <strong>{selectedModuleId}</strong></span>
+                   <button onClick={handleClearSelection} className="text-blue-500 hover:text-blue-700 font-medium">Change</button>
+                 </div>
+              ) : (
+                <div className="relative">
+                  <input
+                    type="text"
+                    placeholder="Type to search (e.g. SMTH011)..."
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                    className="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                  />
+                  
+                  {searchTerm && (
+                    <div className="absolute z-10 mt-1 w-full bg-white shadow-lg max-h-60 rounded-md py-1 text-base ring-1 ring-black ring-opacity-5 overflow-auto focus:outline-none sm:text-sm">
+                      {filteredModules.length === 0 ? (
+                        <div className="cursor-default select-none relative py-2 px-4 text-gray-700">No matching modules found</div>
+                      ) : (
+                        filteredModules.map((mod) => (
+                          <div
+                            key={mod.moduleId}
+                            className="cursor-pointer select-none relative py-2 px-4 hover:bg-blue-50 text-gray-900"
+                            onClick={() => handleModuleSelect(mod.code)}
+                          >
+                            <span className="font-medium">{mod.code}</span> - {mod.name}
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
           </div>
         </div>
       </div>
