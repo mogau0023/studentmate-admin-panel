@@ -110,26 +110,30 @@ export const deleteAssessment = async (assessment: Assessment) => {
   await deleteDoc(doc(db, COLLECTION_NAME, assessment.assessmentId));
 };
 
-export const updateAssessmentResources = async (
+export const updateQuestion = async (
   assessmentId: string,
-  memoFile?: File | null,
-  videoUrl?: string
+  questionId: string,
+  data: Partial<Question>,
+  contentFile?: File | null,
+  answerFile?: File | null
 ) => {
-  const updates: any = {};
+  const updates: any = { ...data };
 
-  if (memoFile) {
-    const storageRef = ref(storage, `assessments/${assessmentId}/memo/${Date.now()}_${memoFile.name}`);
-    await uploadBytes(storageRef, memoFile);
-    updates.memoUrl = await getDownloadURL(storageRef);
+  // Upload Content Image if provided
+  if (contentFile) {
+    const contentStorageRef = ref(storage, `questions/${assessmentId}/${Date.now()}_content_${contentFile.name}`);
+    await uploadBytes(contentStorageRef, contentFile);
+    updates.contentUrl = await getDownloadURL(contentStorageRef);
   }
 
-  if (videoUrl !== undefined) {
-    updates.videoUrl = videoUrl;
+  // Upload Answer Image if provided
+  if (answerFile) {
+    const answerStorageRef = ref(storage, `questions/${assessmentId}/${Date.now()}_answer_${answerFile.name}`);
+    await uploadBytes(answerStorageRef, answerFile);
+    updates.answerUrl = await getDownloadURL(answerStorageRef);
   }
 
-  if (Object.keys(updates).length > 0) {
-    await updateDoc(doc(db, COLLECTION_NAME, assessmentId), updates);
-  }
+  await updateDoc(doc(db, COLLECTION_NAME, assessmentId, 'questions', questionId), updates);
 };
 
 // --- Question Management ---

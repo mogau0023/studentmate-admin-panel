@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Trash2, Image as ImageIcon, Video, Check, FileText, Upload, Save, X, Link as LinkIcon } from 'lucide-react';
+import { Plus, Trash2, Image as ImageIcon, Video, Check, FileText, Upload, Save, X, Edit2 } from 'lucide-react';
 import { Question } from '../types';
-import { getQuestions, addQuestion, deleteQuestion, updateAssessmentResources } from '../services/assessmentService';
+import { getQuestions, addQuestion, deleteQuestion, updateQuestion } from '../services/assessmentService';
 import Modal from './Modal';
 import { parsePdf, ExtractedQuestion } from '../utils/pdfParser';
 
@@ -16,10 +16,11 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
   const [loading, setLoading] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isBulkModalOpen, setIsBulkModalOpen] = useState(false);
-  const [isResourcesModalOpen, setIsResourcesModalOpen] = useState(false);
+  const [isBulkMemoModalOpen, setIsBulkMemoModalOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
   // Manual Form states
+  const [editingQuestionId, setEditingQuestionId] = useState<string | null>(null);
   const [title, setTitle] = useState('');
   const [marks, setMarks] = useState(0);
   const [order, setOrder] = useState(1);
@@ -30,11 +31,8 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
   // Bulk Upload states
   const [bulkFile, setBulkFile] = useState<File | null>(null);
   const [extractedQuestions, setExtractedQuestions] = useState<ExtractedQuestion[]>([]);
+  const [extractedAnswers, setExtractedAnswers] = useState<ExtractedQuestion[]>([]);
   const [parsing, setParsing] = useState(false);
-
-  // Resources states
-  const [memoFile, setMemoFile] = useState<File | null>(null);
-  const [resourceVideoUrl, setResourceVideoUrl] = useState('');
 
   useEffect(() => {
     fetchQuestions();
@@ -55,37 +53,64 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
     }
   };
 
-  const handleOpenModal = () => {
-    setTitle(`Question ${questions.length + 1}`);
-    setMarks(0);
-    setContentFile(null);
-    setAnswerFile(null);
-    setVideoUrl('');
-    setOrder(questions.length + 1);
+  const handleOpenModal = (question?: Question) => {
+    if (question) {
+      setEditingQuestionId(question.questionId);
+      setTitle(question.title);
+      setMarks(question.marks);
+      setOrder(question.order);
+      setVideoUrl(question.videoUrl || '');
+      setContentFile(null); // Keep existing unless changed
+      setAnswerFile(null); // Keep existing unless changed
+    } else {
+      setEditingQuestionId(null);
+      setTitle(`Question ${questions.length + 1}`);
+      setMarks(0);
+      setOrder(questions.length + 1);
+      setVideoUrl('');
+      setContentFile(null);
+      setAnswerFile(null);
+    }
     setIsModalOpen(true);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!contentFile) return;
+    // Validate: Content file required only for new questions
+    if (!editingQuestionId && !contentFile) return;
 
     setSubmitting(true);
     try {
-      await addQuestion(
-        assessmentId,
-        title,
-        marks,
-        order,
-        contentFile,
-        undefined, // content
-        answerFile,
-        undefined, // answerText
-        videoUrl
-      );
+      if (editingQuestionId) {
+        await updateQuestion(
+          assessmentId,
+          editingQuestionId,
+          {
+            title,
+            marks,
+            order,
+            videoUrl: videoUrl || undefined,
+          },
+          contentFile,
+          answerFile
+        );
+      } else {
+        await addQuestion(
+          assessmentId,
+          title,
+          marks,
+          order,
+          contentFile,
+          undefined, // content
+          answerFile,
+          undefined, // answerText
+          videoUrl
+        );
+      }
       setIsModalOpen(false);
       fetchQuestions();
     } catch (error) {
-      console.error('Error adding question:', error);
+      console.error('Error saving question:', error);
     } finally {
       setSubmitting(false);
     }
@@ -104,6 +129,60 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
       } finally {
         setParsing(false);
       }
+    }
+  };
+
+  const handleBulkMemoChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      setBulkFile(e.target.files[0]);
+      setParsing(true);
+      try {
+        const parsed = await parsePdf(e.target.files[0]);
+        setExtractedAnswers(parsed);
+      } catch (error) {
+        console.error('Error parsing Memo PDF:', error);
+        alert('Failed to parse Memo PDF.');
+      } finally {
+        setParsing(false);
+      }
+    }
+  };
+
+  const handleSaveBulkMemo = async () => {
+    if (extractedAnswers.length === 0) return;
+
+    setSubmitting(true);
+    try {
+      // Loop through extracted answers and try to match with existing questions
+      for (const ans of extractedAnswers) {
+        // Find matching question by number/order
+        const matchingQuestion = questions.find(q => 
+          q.title.toLowerCase().includes(`question ${ans.number}`) || 
+          q.title.toLowerCase() === `q${ans.number}` ||
+          q.order === ans.number
+        );
+
+        if (matchingQuestion && ans.imageBlob) {
+           const answerFile = new File([ans.imageBlob], `answer_${ans.number}.jpg`, { type: 'image/jpeg' });
+           await updateQuestion(
+             assessmentId,
+             matchingQuestion.questionId,
+             {}, // No data update, just file
+             null, // no content file
+             answerFile // update answer file
+           );
+        }
+      }
+      setIsBulkMemoModalOpen(false);
+      setExtractedAnswers([]);
+      setBulkFile(null);
+      fetchQuestions();
+      alert('Memo answers uploaded and matched to questions!');
+    } catch (error) {
+      console.error('Error saving bulk memo:', error);
+      alert('Error saving memo. See console for details.');
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -154,6 +233,12 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
     setExtractedQuestions(newQuestions);
   };
 
+  const handleRemoveExtractedAnswer = (index: number) => {
+    const newAnswers = [...extractedAnswers];
+    newAnswers.splice(index, 1);
+    setExtractedAnswers(newAnswers);
+  };
+
   const handleUpdateExtracted = (index: number, field: keyof ExtractedQuestion, value: any) => {
     const newQuestions = [...extractedQuestions];
     newQuestions[index] = { ...newQuestions[index], [field]: value };
@@ -173,21 +258,7 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
 
   const handleSaveResources = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!memoFile && !resourceVideoUrl) return;
-
-    setSubmitting(true);
-    try {
-      await updateAssessmentResources(assessmentId, memoFile, resourceVideoUrl || undefined);
-      alert('Resources updated successfully!');
-      setIsResourcesModalOpen(false);
-      setMemoFile(null);
-      setResourceVideoUrl('');
-    } catch (error) {
-      console.error('Error updating resources:', error);
-      alert('Failed to update resources.');
-    } finally {
-      setSubmitting(false);
-    }
+    // Reverted resources implementation
   };
 
   return (
@@ -210,11 +281,11 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
               </div>
               <div className="flex space-x-3">
                 <button
-                  onClick={() => setIsResourcesModalOpen(true)}
+                  onClick={() => setIsBulkMemoModalOpen(true)}
                   className="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-lg flex items-center space-x-2"
                 >
-                  <LinkIcon className="h-5 w-5" />
-                  <span>Resources</span>
+                  <FileText className="h-5 w-5" />
+                  <span>Bulk Upload Memo</span>
                 </button>
                 <button
                   onClick={() => setIsBulkModalOpen(true)}
@@ -224,7 +295,7 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
                   <span>Bulk Upload PDF</span>
                 </button>
                 <button
-                  onClick={handleOpenModal}
+                  onClick={() => handleOpenModal()}
                   className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg flex items-center space-x-2"
                 >
                   <Plus className="h-5 w-5" />
@@ -261,8 +332,16 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
                             {q.marks} Marks
                           </span>
                           <button
+                            onClick={() => handleOpenModal(q)}
+                            className="text-blue-500 hover:text-blue-700"
+                            title="Edit Question"
+                          >
+                            <Edit2 className="h-5 w-5" />
+                          </button>
+                          <button
                             onClick={() => handleDelete(q)}
                             className="text-red-500 hover:text-red-700"
+                            title="Delete Question"
                           >
                             <Trash2 className="h-5 w-5" />
                           </button>
@@ -323,64 +402,114 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
         </div>
       </div>
 
-      {/* Resources Modal */}
-      <Modal
-        isOpen={isResourcesModalOpen}
-        onClose={() => setIsResourcesModalOpen(false)}
-        title="Assessment Resources"
-      >
-        <form onSubmit={handleSaveResources} className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700">Memorandum PDF (Optional)</label>
-            <div className="mt-1 flex justify-center px-6 pt-5 pb-6 border-2 border-gray-300 border-dashed rounded-md">
-              <div className="space-y-1 text-center">
-                <FileText className="mx-auto h-12 w-12 text-gray-400" />
-                <div className="flex text-sm text-gray-600">
-                  <label htmlFor="memo-upload" className="relative cursor-pointer bg-white rounded-md font-medium text-blue-600 hover:text-blue-500 focus-within:outline-none focus-within:ring-2 focus-within:ring-offset-2 focus-within:ring-blue-500">
-                    <span>Upload a file</span>
-                    <input id="memo-upload" name="memo-upload" type="file" className="sr-only" accept=".pdf" onChange={(e) => setMemoFile(e.target.files ? e.target.files[0] : null)} />
-                  </label>
-                  <p className="pl-1">or drag and drop</p>
+      {/* Bulk Memo Modal */}
+      {isBulkMemoModalOpen && (
+        <div className="fixed inset-0 z-[60] overflow-y-auto">
+          <div className="flex items-center justify-center min-h-screen px-4 pt-4 pb-20 text-center sm:block sm:p-0">
+            <div className="fixed inset-0 transition-opacity" aria-hidden="true">
+              <div className="absolute inset-0 bg-gray-500 opacity-75"></div>
+            </div>
+            <span className="hidden sm:inline-block sm:align-middle sm:h-screen" aria-hidden="true">&#8203;</span>
+            <div className="inline-block align-bottom bg-white rounded-lg text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-4xl sm:w-full">
+              <div className="bg-white px-4 pt-5 pb-4 sm:p-6 sm:pb-4">
+                <div className="flex justify-between items-center mb-6">
+                  <h3 className="text-lg font-medium text-gray-900">Bulk Upload Memo (Answers)</h3>
+                  <button onClick={() => setIsBulkMemoModalOpen(false)} className="text-gray-400 hover:text-gray-500">
+                    <X className="h-6 w-6" />
+                  </button>
                 </div>
-                <p className="text-xs text-gray-500">PDF up to 10MB</p>
-                {memoFile && <p className="text-sm text-green-600 font-semibold">{memoFile.name}</p>}
+
+                <div className="space-y-6">
+                  <p className="text-sm text-gray-600">
+                    Upload a PDF containing the memorandum. The system will try to match "Question 1" in the memo to "Question 1" in your list.
+                  </p>
+                  
+                  {/* File Upload Area */}
+                  <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:bg-gray-50 transition-colors">
+                    <input
+                      type="file"
+                      accept=".pdf"
+                      onChange={handleBulkMemoChange}
+                      className="hidden"
+                      id="bulk-memo-upload"
+                    />
+                    <label htmlFor="bulk-memo-upload" className="cursor-pointer block">
+                      <Upload className="mx-auto h-12 w-12 text-purple-400" />
+                      <p className="mt-2 text-sm text-gray-600">
+                        {bulkFile ? bulkFile.name : "Click to upload Memo PDF"}
+                      </p>
+                      <p className="text-xs text-gray-500 mt-1">PDFs with selectable text only</p>
+                    </label>
+                  </div>
+
+                  {parsing && (
+                    <div className="text-center py-4 text-purple-600 font-medium">
+                      Parsing Memo... Please wait.
+                    </div>
+                  )}
+
+                  {/* Extracted Answers Preview */}
+                  {extractedAnswers.length > 0 && (
+                    <div className="mt-6">
+                      <div className="flex justify-between items-center mb-4">
+                        <h4 className="font-medium text-gray-900">Extracted Answers ({extractedAnswers.length})</h4>
+                        <button
+                          onClick={handleSaveBulkMemo}
+                          disabled={submitting}
+                          className="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-lg flex items-center space-x-2 text-sm"
+                        >
+                          <Save className="h-4 w-4" />
+                          <span>{submitting ? 'Matching & Saving...' : 'Match & Save Answers'}</span>
+                        </button>
+                      </div>
+
+                      <div className="space-y-4 max-h-[50vh] overflow-y-auto pr-2">
+                        {extractedAnswers.map((q, index) => (
+                          <div key={index} className="bg-purple-50 p-4 rounded-lg border border-purple-200">
+                            <div className="flex justify-between items-start mb-2">
+                              <div className="flex items-center space-x-2">
+                                <span className="bg-purple-100 text-purple-800 text-xs font-bold px-2 py-1 rounded">
+                                  #{q.number}
+                                </span>
+                                <span className="text-xs text-gray-500">Detected Answer Section</span>
+                              </div>
+                              <button
+                                onClick={() => handleRemoveExtractedAnswer(index)}
+                                className="text-red-500 hover:text-red-700"
+                              >
+                                <X className="h-4 w-4" />
+                              </button>
+                            </div>
+                            
+                            {/* Image Preview */}
+                            {q.imageBlob ? (
+                              <div className="border border-purple-200 rounded p-2 bg-white flex justify-center">
+                                <img 
+                                  src={URL.createObjectURL(q.imageBlob)} 
+                                  alt={`Answer ${q.number}`} 
+                                  className="max-w-full max-h-64 object-contain"
+                                />
+                              </div>
+                            ) : (
+                               <div className="text-sm text-gray-500 italic">No image extracted</div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700">Full Video Solution URL (Optional)</label>
-            <div className="mt-1 flex rounded-md shadow-sm">
-              <span className="inline-flex items-center px-3 rounded-l-md border border-r-0 border-gray-300 bg-gray-50 text-gray-500 text-sm">
-                https://
-              </span>
-              <input
-                type="url"
-                value={resourceVideoUrl}
-                onChange={(e) => setResourceVideoUrl(e.target.value)}
-                className="focus:ring-blue-500 focus:border-blue-500 flex-1 block w-full rounded-none rounded-r-md sm:text-sm border-gray-300 py-2 px-3 border"
-                placeholder="youtube.com/playlist?list=..."
-              />
-            </div>
-          </div>
-
-          <div className="mt-5 sm:mt-6">
-            <button
-              type="submit"
-              disabled={submitting}
-              className={`w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-purple-600 text-base font-medium text-white hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500 sm:text-sm ${submitting ? 'opacity-75 cursor-not-allowed' : ''}`}
-            >
-              {submitting ? 'Saving Resources...' : 'Save Resources'}
-            </button>
-          </div>
-        </form>
-      </Modal>
+        </div>
+      )}
 
       {/* Manual Add Modal */}
       <Modal
         isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}
-        title="Add New Question (Manual)"
+        title={editingQuestionId ? "Edit Question" : "Add New Question (Manual)"}
       >
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
@@ -421,14 +550,14 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700">Question Image (Required)</label>
+            <label className="block text-sm font-medium text-gray-700">Question Image {editingQuestionId ? '(Optional - Leave empty to keep existing)' : '(Required)'}</label>
             <div className="mt-1 flex justify-center px-6 pt-5 pb-6 border-2 border-gray-300 border-dashed rounded-md">
               <div className="space-y-1 text-center">
                 <ImageIcon className="mx-auto h-12 w-12 text-gray-400" />
                 <div className="flex text-sm text-gray-600">
                   <label htmlFor="content-upload" className="relative cursor-pointer bg-white rounded-md font-medium text-blue-600 hover:text-blue-500 focus-within:outline-none focus-within:ring-2 focus-within:ring-offset-2 focus-within:ring-blue-500">
                     <span>Upload a file</span>
-                    <input id="content-upload" name="content-upload" type="file" className="sr-only" accept="image/*" onChange={(e) => setContentFile(e.target.files ? e.target.files[0] : null)} required />
+                    <input id="content-upload" name="content-upload" type="file" className="sr-only" accept="image/*" onChange={(e) => setContentFile(e.target.files ? e.target.files[0] : null)} required={!editingQuestionId} />
                   </label>
                   <p className="pl-1">or drag and drop</p>
                 </div>
