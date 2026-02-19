@@ -1,6 +1,7 @@
 import { 
   collection, 
   addDoc, 
+  updateDoc,
   deleteDoc, 
   doc, 
   getDocs, 
@@ -107,6 +108,28 @@ export const deleteAssessment = async (assessment: Assessment) => {
 
   // Delete document from Firestore
   await deleteDoc(doc(db, COLLECTION_NAME, assessment.assessmentId));
+};
+
+export const updateAssessmentResources = async (
+  assessmentId: string,
+  memoFile?: File | null,
+  videoUrl?: string
+) => {
+  const updates: any = {};
+
+  if (memoFile) {
+    const storageRef = ref(storage, `assessments/${assessmentId}/memo/${Date.now()}_${memoFile.name}`);
+    await uploadBytes(storageRef, memoFile);
+    updates.memoUrl = await getDownloadURL(storageRef);
+  }
+
+  if (videoUrl !== undefined) {
+    updates.videoUrl = videoUrl;
+  }
+
+  if (Object.keys(updates).length > 0) {
+    await updateDoc(doc(db, COLLECTION_NAME, assessmentId), updates);
+  }
 };
 
 // --- Question Management ---

@@ -26,6 +26,8 @@ export interface Assessment {
   title: string;
   year: number;
   pdfUrl?: string; // Made optional as we might have question-based assessments only
+  memoUrl?: string; // URL to the memorandum PDF
+  videoUrl?: string; // URL to the full video solution/playlist
   createdAt: Timestamp;
   createdBy: string;
 }

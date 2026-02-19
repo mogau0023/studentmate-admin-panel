@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Trash2, Image as ImageIcon, Video, Check, FileText, Upload, Save, X } from 'lucide-react';
+import { Plus, Trash2, Image as ImageIcon, Video, Check, FileText, Upload, Save, X, Link as LinkIcon } from 'lucide-react';
 import { Question } from '../types';
-import { getQuestions, addQuestion, deleteQuestion } from '../services/assessmentService';
+import { getQuestions, addQuestion, deleteQuestion, updateAssessmentResources } from '../services/assessmentService';
 import Modal from './Modal';
 import { parsePdf, ExtractedQuestion } from '../utils/pdfParser';
 
@@ -16,6 +16,7 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
   const [loading, setLoading] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isBulkModalOpen, setIsBulkModalOpen] = useState(false);
+  const [isResourcesModalOpen, setIsResourcesModalOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
   // Manual Form states
@@ -30,6 +31,10 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
   const [bulkFile, setBulkFile] = useState<File | null>(null);
   const [extractedQuestions, setExtractedQuestions] = useState<ExtractedQuestion[]>([]);
   const [parsing, setParsing] = useState(false);
+
+  // Resources states
+  const [memoFile, setMemoFile] = useState<File | null>(null);
+  const [resourceVideoUrl, setResourceVideoUrl] = useState('');
 
   useEffect(() => {
     fetchQuestions();
@@ -166,6 +171,25 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
     }
   };
 
+  const handleSaveResources = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!memoFile && !resourceVideoUrl) return;
+
+    setSubmitting(true);
+    try {
+      await updateAssessmentResources(assessmentId, memoFile, resourceVideoUrl || undefined);
+      alert('Resources updated successfully!');
+      setIsResourcesModalOpen(false);
+      setMemoFile(null);
+      setResourceVideoUrl('');
+    } catch (error) {
+      console.error('Error updating resources:', error);
+      alert('Failed to update resources.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto" aria-labelledby="modal-title" role="dialog" aria-modal="true">
       <div className="flex items-end justify-center min-h-screen pt-4 px-4 pb-20 text-center sm:block sm:p-0">
@@ -185,6 +209,13 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
                 </p>
               </div>
               <div className="flex space-x-3">
+                <button
+                  onClick={() => setIsResourcesModalOpen(true)}
+                  className="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-lg flex items-center space-x-2"
+                >
+                  <LinkIcon className="h-5 w-5" />
+                  <span>Resources</span>
+                </button>
                 <button
                   onClick={() => setIsBulkModalOpen(true)}
                   className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg flex items-center space-x-2"
@@ -291,6 +322,59 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
           </div>
         </div>
       </div>
+
+      {/* Resources Modal */}
+      <Modal
+        isOpen={isResourcesModalOpen}
+        onClose={() => setIsResourcesModalOpen(false)}
+        title="Assessment Resources"
+      >
+        <form onSubmit={handleSaveResources} className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700">Memorandum PDF (Optional)</label>
+            <div className="mt-1 flex justify-center px-6 pt-5 pb-6 border-2 border-gray-300 border-dashed rounded-md">
+              <div className="space-y-1 text-center">
+                <FileText className="mx-auto h-12 w-12 text-gray-400" />
+                <div className="flex text-sm text-gray-600">
+                  <label htmlFor="memo-upload" className="relative cursor-pointer bg-white rounded-md font-medium text-blue-600 hover:text-blue-500 focus-within:outline-none focus-within:ring-2 focus-within:ring-offset-2 focus-within:ring-blue-500">
+                    <span>Upload a file</span>
+                    <input id="memo-upload" name="memo-upload" type="file" className="sr-only" accept=".pdf" onChange={(e) => setMemoFile(e.target.files ? e.target.files[0] : null)} />
+                  </label>
+                  <p className="pl-1">or drag and drop</p>
+                </div>
+                <p className="text-xs text-gray-500">PDF up to 10MB</p>
+                {memoFile && <p className="text-sm text-green-600 font-semibold">{memoFile.name}</p>}
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700">Full Video Solution URL (Optional)</label>
+            <div className="mt-1 flex rounded-md shadow-sm">
+              <span className="inline-flex items-center px-3 rounded-l-md border border-r-0 border-gray-300 bg-gray-50 text-gray-500 text-sm">
+                https://
+              </span>
+              <input
+                type="url"
+                value={resourceVideoUrl}
+                onChange={(e) => setResourceVideoUrl(e.target.value)}
+                className="focus:ring-blue-500 focus:border-blue-500 flex-1 block w-full rounded-none rounded-r-md sm:text-sm border-gray-300 py-2 px-3 border"
+                placeholder="youtube.com/playlist?list=..."
+              />
+            </div>
+          </div>
+
+          <div className="mt-5 sm:mt-6">
+            <button
+              type="submit"
+              disabled={submitting}
+              className={`w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-purple-600 text-base font-medium text-white hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500 sm:text-sm ${submitting ? 'opacity-75 cursor-not-allowed' : ''}`}
+            >
+              {submitting ? 'Saving Resources...' : 'Save Resources'}
+            </button>
+          </div>
+        </form>
+      </Modal>
 
       {/* Manual Add Modal */}
       <Modal
