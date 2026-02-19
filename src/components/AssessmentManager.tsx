@@ -19,6 +19,7 @@ const AssessmentManager = ({ type, title }: AssessmentManagerProps) => {
   const [selectedUniversityId, setSelectedUniversityId] = useState<string>('');
   const [modules, setModules] = useState<Module[]>([]);
   const [selectedModuleId, setSelectedModuleId] = useState<string>('');
+  const [searchTerm, setSearchTerm] = useState('');
   const [assessments, setAssessments] = useState<Assessment[]>([]);
   const [loading, setLoading] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -125,6 +126,11 @@ const AssessmentManager = ({ type, title }: AssessmentManagerProps) => {
     }
   };
 
+  const filteredModules = modules.filter(mod => 
+    mod.code.toLowerCase().includes(searchTerm.toLowerCase()) || 
+    mod.name.toLowerCase().includes(searchTerm.toLowerCase())
+  );
+
   return (
     <div>
       {selectedAssessmentForQuestions ? (
@@ -165,19 +171,29 @@ const AssessmentManager = ({ type, title }: AssessmentManagerProps) => {
           </div>
           <div className="flex-1">
             <label className="block text-sm font-medium text-gray-700 mb-1">Select Module</label>
-            <select
-              value={selectedModuleId}
-              onChange={(e) => setSelectedModuleId(e.target.value)}
-              className="block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm rounded-md border"
-              disabled={!selectedUniversityId}
-            >
-              {modules.length === 0 && <option value="">No modules found</option>}
-              {modules.map((mod) => (
-                <option key={mod.moduleId} value={mod.code}> {/* Value is now the module code */}
-                  {mod.code} - {mod.name}
-                </option>
-              ))}
-            </select>
+            <div className="space-y-2">
+              <input
+                type="text"
+                placeholder="Search module code or name..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+              />
+              <select
+                value={selectedModuleId}
+                onChange={(e) => setSelectedModuleId(e.target.value)}
+                className="block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm rounded-md border"
+                disabled={!selectedUniversityId}
+                size={5} // Show multiple options to make it easier to pick from filtered list
+              >
+                {filteredModules.length === 0 && <option value="">No matching modules</option>}
+                {filteredModules.map((mod) => (
+                  <option key={mod.moduleId} value={mod.code}>
+                    {mod.code} - {mod.name}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
         </div>
       </div>
