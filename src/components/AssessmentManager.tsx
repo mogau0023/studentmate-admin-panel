@@ -185,7 +185,7 @@ const AssessmentManager = ({ type, title }: AssessmentManagerProps) => {
         </button>
       </div>
 
-      <div className="bg-white rounded-xl shadow-sm overflow-hidden mb-6">
+      <div className="bg-white rounded-xl shadow-sm mb-6">
         <div className="p-4 border-b border-gray-100 flex items-center space-x-4">
           <div className="flex-1">
             <label className="block text-sm font-medium text-gray-700 mb-1">Select University</label>
@@ -227,9 +227,11 @@ const AssessmentManager = ({ type, title }: AssessmentManagerProps) => {
                   />
                   
                   {showDropdown && (
-                    <div className="absolute z-10 mt-1 w-full bg-white shadow-lg max-h-60 rounded-md py-1 text-base ring-1 ring-black ring-opacity-5 overflow-auto focus:outline-none sm:text-sm">
+                    <div className="absolute z-50 mt-1 w-full bg-white shadow-lg max-h-60 rounded-md py-1 text-base ring-1 ring-black ring-opacity-5 overflow-auto focus:outline-none sm:text-sm">
                       {filteredModules.length === 0 ? (
-                        <div className="cursor-default select-none relative py-2 px-4 text-gray-700">No matching modules found</div>
+                        <div className="cursor-default select-none relative py-2 px-4 text-gray-500 italic">
+                          {searchTerm ? 'No matching modules found' : 'Type to search...'}
+                        </div>
                       ) : (
                         filteredModules.map((mod) => (
                           <div
