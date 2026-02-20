@@ -56,9 +56,10 @@ function normalizeSpaces(s: string) {
 function matchHeaderNumber(lineText: string): { q: number; raw?: string } | null {
   const t = normalizeSpaces(lineText);
 
-  // Explicit headers
-  const explicit =
-    t.match(/^(?:Question|Q|Answer|Solution)\s*[.:)\-]*\s*(\d+)(?:\.(\d+))?/i) ||
+  // Explicit headers - Fuzzy match for "Q U E S T I O N", "Que stion", etc.
+  const QUESTION_FUZZY = /^(?:Q(?:\s*U\s*E\s*S\s*T\s*I\s*O\s*N)?|Q\s*u\s*e\s*s\s*t\s*i\s*o\s*n|Que\s*stion|Question|Answer|Solution)\s*[.:)\-]*\s*(\d+)/i; 
+  
+  const explicit = t.match(QUESTION_FUZZY) ||
     t.match(/^(?:Question|Q|Answer|Solution)\s+(\d+)/i) ||
     t.match(/^(?:Q)\s*[.]?\s*(\d+)/i);
 
