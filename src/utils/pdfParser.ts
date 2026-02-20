@@ -324,9 +324,7 @@ export const parsePdf = async (
     // --- Phase 2: OCR fallback (only if needed) ---
     const shouldOcr =
       headers.length === 0 &&
-      ocrPagesUsed < MAX_OCR_PAGES &&
-      // if there is some text but it’s tiny, still try OCR
-      (textItemsCount < 30 || textItemsCount === 0);
+      ocrPagesUsed < MAX_OCR_PAGES;
 
     let canvasText: HTMLCanvasElement | null = null;
 
