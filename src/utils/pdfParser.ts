@@ -29,99 +29,158 @@ export const parsePdf = async (file: File, onProgress?: (status: string) => void
     const page = await pdf.getPage(i);
     const viewport = page.getViewport({ scale: 2.0 }); // High res for quality
     
-    // 1. Render Page to Canvas (Required for OCR)
-    const canvas = document.createElement('canvas');
-    const context = canvas.getContext('2d');
-    canvas.height = viewport.height;
-    canvas.width = viewport.width;
+    // --- Phase 1: Try Text Extraction (Fast & Reliable for Digital PDFs) ---
+    let questionLocations: { number: number, y: number }[] = [];
+    let extractionMethod = 'Text';
 
-    if (!context) continue;
+    try {
+      const textContent = await page.getTextContent();
+      
+      // Group text items by Y-coordinate (lines)
+      const lines: { y: number, text: string, items: any[] }[] = [];
+      const TOLERANCE = 5;
 
-    // Render context needs to match the type expected by pdf.js
-    const renderContext: any = {
-      canvasContext: context,
-      viewport: viewport,
-    };
-    await page.render(renderContext).promise;
+      textContent.items.forEach((item: any) => {
+        const itemY = item.transform[5]; // PDF Y (bottom-up)
+        const existingLine = lines.find(line => Math.abs(line.y - itemY) < TOLERANCE);
+        if (existingLine) {
+          existingLine.items.push(item);
+        } else {
+          lines.push({ y: itemY, text: '', items: [item] });
+        }
+      });
 
-    // 2. Run OCR using Tesseract.js
-    if (onProgress) onProgress(`Scanning text on Page ${i} (OCR)...`);
-    
-    const result = await Tesseract.recognize(canvas, 'eng');
-    const lines = (result.data as any).lines;
-    
-    const questionLocations: { number: number, y: number }[] = [];
+      // Sort lines Top-to-Bottom (descending Y in PDF space)
+      lines.sort((a, b) => b.y - a.y);
 
-    lines.forEach(line => {
-      const text = line.text.trim();
-      // Match "Question 1", "Q1", "Answer 1"
-      // Note: Tesseract might return "Question 1" or "Question l" or "Question I" sometimes, but we stick to digits for now
-      const match = text.match(/^(?:Question|Q|Answer)\s*(\d+)/i);
-
-      if (match) {
-        // line.bbox gives coordinates directly in canvas space (top-down)
-        // bbox: { x0, y0, x1, y1 }
-        const y = line.bbox.y0;
+      lines.forEach(line => {
+        // Sort items Left-to-Right
+        line.items.sort((a, b) => a.transform[4] - b.transform[4]);
+        const lineText = line.items.map(i => i.str).join(' ').trim();
         
-        if (!questionLocations.find(q => q.number === parseInt(match[1]))) {
-            questionLocations.push({ 
-              number: parseInt(match[1]), 
-              y: y 
-            });
+        // Match "Question 1", "Q1", "Answer 1"
+        const match = lineText.match(/^(?:Question|Q|Answer)\s*(\d+)/i);
+
+        if (match) {
+          const pdfY = line.y;
+          const canvasY = viewport.height - (pdfY * viewport.scale); // Convert to Canvas Y (top-down)
+          
+          if (!questionLocations.find(q => q.number === parseInt(match[1]))) {
+            questionLocations.push({ number: parseInt(match[1]), y: canvasY });
+          }
+        }
+      });
+    } catch (e) {
+      console.warn(`Text extraction failed for page ${i}, falling back to OCR`, e);
+    }
+
+    // --- Phase 2: Fallback to OCR (Slow but works for Scans) ---
+    if (questionLocations.length === 0) {
+      extractionMethod = 'OCR';
+      if (onProgress) onProgress(`No text found on Page ${i}. Switching to OCR...`);
+      
+      // Render Page to Canvas
+      const canvas = document.createElement('canvas');
+      const context = canvas.getContext('2d');
+      canvas.height = viewport.height;
+      canvas.width = viewport.width;
+
+      if (context) {
+        const renderContext: any = {
+          canvasContext: context,
+          viewport: viewport,
+        };
+        await page.render(renderContext).promise;
+
+        try {
+          const result = await Tesseract.recognize(canvas, 'eng');
+          const ocrLines = (result.data as any).lines;
+          
+          ocrLines.forEach((line: any) => {
+            const text = line.text.trim();
+            const match = text.match(/^(?:Question|Q|Answer)\s*(\d+)/i);
+            if (match) {
+              const y = line.bbox.y0; // OCR gives top-down Y
+              if (!questionLocations.find(q => q.number === parseInt(match[1]))) {
+                questionLocations.push({ number: parseInt(match[1]), y: y });
+              }
+            }
+          });
+        } catch (ocrError) {
+          console.error(`OCR failed for page ${i}:`, ocrError);
+          // If OCR fails, we just continue with 0 questions for this page
         }
       }
-    });
+    }
 
-    // Sort locations by Y position (top to bottom)
+    // Sort locations by Y position
     questionLocations.sort((a, b) => a.y - b.y);
 
-    // If no questions found on this page, skip image generation (or handle continuation)
     if (questionLocations.length === 0) continue;
 
-    // 3. Slice Canvas based on Question Locations
+    // --- Phase 3: Slice Images ---
+    // We need the canvas for slicing regardless of how we found the locations
+    // If we came from Phase 1, we haven't rendered the canvas yet.
+    let canvas = document.createElement('canvas'); // Re-declare or reuse
+    // Check if we need to render (if extractionMethod was Text, canvas is empty)
+    if (extractionMethod === 'Text') {
+        const context = canvas.getContext('2d');
+        canvas.height = viewport.height;
+        canvas.width = viewport.width;
+        if (context) {
+             const renderContext: any = {
+              canvasContext: context,
+              viewport: viewport,
+            };
+            await page.render(renderContext).promise;
+        }
+    } else {
+        // If OCR ran, we already rendered to a canvas, but scoping is tricky
+        // For simplicity/safety, let's just re-render or structure code to share.
+        // Given the loop structure, re-rendering is safest to ensure clean state, 
+        // though slightly inefficient. Optimizing:
+        const context = canvas.getContext('2d');
+        canvas.height = viewport.height;
+        canvas.width = viewport.width;
+        if (context) {
+             const renderContext: any = {
+              canvasContext: context,
+              viewport: viewport,
+            };
+            await page.render(renderContext).promise;
+        }
+    }
+
+    const context = canvas.getContext('2d');
+    if (!context) continue;
+
     for (let j = 0; j < questionLocations.length; j++) {
       const q = questionLocations[j];
-      const startY = Math.max(0, q.y - 50); // Start a bit above the text to catch headers
-      
-      // End Y is either the start of the next question OR the bottom of the page
+      const startY = Math.max(0, q.y - 50); 
       let endY = viewport.height;
       if (j < questionLocations.length - 1) {
-        endY = questionLocations[j + 1].y - 20; // Leave a small gap
+        endY = questionLocations[j + 1].y - 20; 
       }
-
       const height = endY - startY;
       if (height <= 0) continue;
 
-      // Create a new canvas for the sliced image
       const sliceCanvas = document.createElement('canvas');
       sliceCanvas.width = viewport.width;
       sliceCanvas.height = height;
       const sliceCtx = sliceCanvas.getContext('2d');
       
       if (sliceCtx) {
-        // Draw the specific slice from the full page
-        sliceCtx.drawImage(
-          canvas, 
-          0, startY, viewport.width, height, // Source: x, y, w, h
-          0, 0, viewport.width, height       // Dest: x, y, w, h
-        );
-
-        // Convert to Blob
-        const blob = await new Promise<Blob | null>(resolve => 
-          sliceCanvas.toBlob(resolve, 'image/jpeg', 0.85)
-        );
+        sliceCtx.drawImage(canvas, 0, startY, viewport.width, height, 0, 0, viewport.width, height);
+        const blob = await new Promise<Blob | null>(resolve => sliceCanvas.toBlob(resolve, 'image/jpeg', 0.85));
 
         if (blob) {
           allQuestions.push({
             number: q.number,
-            text: `(OCR Extracted from Page ${i})`,
-            marks: 0, // Default, user can edit
+            text: `(${extractionMethod} Extracted from Page ${i})`,
+            marks: 0,
             imageBlob: blob,
             page: i,
-            coordinates: {
-              yStart: startY / 2.0, // Normalize back to PDF scale (approx)
-              yEnd: endY / 2.0
-            }
+            coordinates: { yStart: startY / 2.0, yEnd: endY / 2.0 }
           });
         }
       }
