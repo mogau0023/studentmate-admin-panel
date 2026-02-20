@@ -64,8 +64,23 @@ export const parsePdf = async (file: File): Promise<ExtractedQuestion[]> => {
       // Check for Question Pattern
       // Matches: "Question 1", "Q1", "Question 1:", "1." (if enabled later)
       // Added robustness: "Answer 1" for memos, and simple "1." if explicitly needed
-      const match = lineText.match(/^(?:Question|Q|Answer)\s*(\d+)/i) || 
-                    lineText.match(/^(\d+)[\.:]\s+/); // Fallback: "1." or "1:" at start of line
+      // 2024-05-23: Expanded regex to catch "1.1", "1.2" etc and treat them as belonging to Question 1 if Q1 not found explicitly
+      // But primary goal is to find "Question 1" or "1"
+      
+      const lineTextTrimmed = lineText.trim();
+
+      // Priority 1: Explicit "Question X" or "Answer X"
+      let match = lineTextTrimmed.match(/^(?:Question|Q|Answer)\s*(\d+)/i);
+      
+      // Priority 2: "1." or "1.1" or "1)" start of line
+      if (!match) {
+         match = lineTextTrimmed.match(/^(\d+)[\.)]\s+/); 
+      }
+      
+      // Priority 3: Just "1" if it's a very short line (likely a header)
+      if (!match && lineTextTrimmed.match(/^\d+$/)) {
+          match = lineTextTrimmed.match(/^(\d+)$/);
+      }
 
       if (match) {
         // Use the Y of the line (first item's Y)
