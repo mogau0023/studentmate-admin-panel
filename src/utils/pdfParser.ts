@@ -69,19 +69,10 @@ export const parsePdf = async (file: File): Promise<ExtractedQuestion[]> => {
       
       const lineTextTrimmed = lineText.trim();
 
-      // Priority 1: Explicit "Question X" or "Answer X"
+      // Only match Explicit "Question X" or "Answer X"
+      // Reverted loose numbering as per user request
       let match = lineTextTrimmed.match(/^(?:Question|Q|Answer)\s*(\d+)/i);
       
-      // Priority 2: "1." or "1.1" or "1)" start of line
-      if (!match) {
-         match = lineTextTrimmed.match(/^(\d+)[\.)]\s+/); 
-      }
-      
-      // Priority 3: Just "1" if it's a very short line (likely a header)
-      if (!match && lineTextTrimmed.match(/^\d+$/)) {
-          match = lineTextTrimmed.match(/^(\d+)$/);
-      }
-
       if (match) {
         // Use the Y of the line (first item's Y)
         // Convert to canvas space (top-down)
