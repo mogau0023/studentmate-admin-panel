@@ -58,8 +58,14 @@ export const parsePdf = async (file: File, onProgress?: (status: string) => void
         line.items.sort((a, b) => a.transform[4] - b.transform[4]);
         const lineText = line.items.map(i => i.str).join(' ').trim();
         
-        // Match "Question 1", "Q1", "Answer 1"
-        const match = lineText.match(/^(?:Question|Q|Answer)\s*(\d+)/i);
+        // Match "Question 1", "Q1", "Answer 1", "Question One"
+        // Also allow matching if it's not at the very start, but appears as a clear header
+        // Regex Explanation:
+        // (?:^|\s) -> Start of line or whitespace
+        // (?:Question|Q|Answer|Solution) -> Keyword
+        // [\s.:-]* -> Optional separator (space, dot, colon, dash)
+        // (\d+) -> The number
+        const match = lineText.match(/(?:^|\s)(?:Question|Q|Answer|Solution)[\s.:-]*(\d+)/i);
 
         if (match) {
           const pdfY = line.y;
@@ -98,7 +104,7 @@ export const parsePdf = async (file: File, onProgress?: (status: string) => void
           
           ocrLines.forEach((line: any) => {
             const text = line.text.trim();
-            const match = text.match(/^(?:Question|Q|Answer)\s*(\d+)/i);
+            const match = text.match(/(?:^|\s)(?:Question|Q|Answer|Solution)[\s.:-]*(\d+)/i);
             if (match) {
               const y = line.bbox.y0; // OCR gives top-down Y
               if (!questionLocations.find(q => q.number === parseInt(match[1]))) {
