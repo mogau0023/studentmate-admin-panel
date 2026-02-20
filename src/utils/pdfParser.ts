@@ -30,28 +30,60 @@ export const parsePdf = async (file: File): Promise<ExtractedQuestion[]> => {
     // 1. Get Text Content for Coordinate Analysis
     const textContent = await page.getTextContent();
     
-    // Find Y-coordinates of "Question X"
-    // Note: PDF coordinates start from bottom-left. viewport.height - y gives top-down Y.
-    const questionLocations: { number: number, y: number }[] = [];
-    
+    // Group text items by Y-coordinate (lines) to handle fragmented text
+    // PDF coordinates: Y starts from bottom. We group by roughly same Y.
+    const lines: { y: number, text: string, items: any[] }[] = [];
+    const TOLERANCE = 5; // Vertical tolerance in PDF units
+
     textContent.items.forEach((item: any) => {
-      const str = item.str.trim();
-      // Match "Question 1", "Q1", "Question 1:", etc.
-      const match = str.match(/^(?:Question|Q)\s*(\d+)/i);
-      if (match) {
-        // Transform[5] is the y-coordinate in PDF space (bottom-up)
-        // Convert to canvas space (top-down)
-        // item.transform is [scaleX, skewY, skewX, scaleY, x, y]
-        const pdfY = item.transform[5]; 
-        const canvasY = viewport.height - (pdfY * viewport.scale); // Approximate conversion
-        questionLocations.push({ 
-          number: parseInt(match[1]), 
-          y: canvasY 
-        });
+      // Find an existing line that matches this item's Y
+      // transform[5] is Y in PDF space (bottom-up)
+      const itemY = item.transform[5];
+      const existingLine = lines.find(line => Math.abs(line.y - itemY) < TOLERANCE);
+
+      if (existingLine) {
+        existingLine.items.push(item);
+        // We'll re-sort and join text later
+      } else {
+        lines.push({ y: itemY, text: '', items: [item] });
       }
     });
 
-    // Sort locations by Y position (top to bottom)
+    // Sort lines by Y (Top to Bottom for reading order)
+    // In PDF space, higher Y is higher up on page. So sort Descending.
+    lines.sort((a, b) => b.y - a.y);
+
+    const questionLocations: { number: number, y: number }[] = [];
+
+    lines.forEach(line => {
+      // Sort items in line by X (Left to Right)
+      line.items.sort((a, b) => a.transform[4] - b.transform[4]);
+      // Join text
+      const lineText = line.items.map(i => i.str).join(' ');
+      
+      // Check for Question Pattern
+      // Matches: "Question 1", "Q1", "Question 1:", "1." (if enabled later)
+      // Added robustness: "Answer 1" for memos, and simple "1." if explicitly needed
+      const match = lineText.match(/^(?:Question|Q|Answer)\s*(\d+)/i) || 
+                    lineText.match(/^(\d+)[\.:]\s+/); // Fallback: "1." or "1:" at start of line
+
+      if (match) {
+        // Use the Y of the line (first item's Y)
+        // Convert to canvas space (top-down)
+        const pdfY = line.y;
+        const canvasY = viewport.height - (pdfY * viewport.scale);
+        
+        // Ensure we haven't already added this question number (avoid duplicates on same page)
+        if (!questionLocations.find(q => q.number === parseInt(match[1]))) {
+            questionLocations.push({ 
+              number: parseInt(match[1]), 
+              y: canvasY 
+            });
+        }
+      }
+    });
+
+    // Sort locations by Y position (top to bottom) within the page
     questionLocations.sort((a, b) => a.y - b.y);
 
     // If no questions found on this page, skip image generation (or handle continuation)

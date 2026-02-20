@@ -122,6 +122,9 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
       setParsing(true);
       try {
         const parsed = await parsePdf(e.target.files[0]);
+        if (parsed.length === 0) {
+          alert('No questions detected in the PDF. Please ensure the file is text-based (not scanned) and uses standard headings like "Question 1", "Q1", or "1."');
+        }
         setExtractedQuestions(parsed);
       } catch (error) {
         console.error('Error parsing PDF:', error);
@@ -138,6 +141,9 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
       setParsing(true);
       try {
         const parsed = await parsePdf(e.target.files[0]);
+        if (parsed.length === 0) {
+          alert('No answers detected in the Memo PDF. Please ensure the file uses "Question 1", "Answer 1", or "1." headings.');
+        }
         setExtractedAnswers(parsed);
       } catch (error) {
         console.error('Error parsing Memo PDF:', error);
