@@ -169,7 +169,12 @@ function isHeaderLike(
   const leftThreshold = stats.pageWidth * 0.20; // within first 20% width
   const isLeft = line.minX <= leftThreshold;
 
-  const hasKeyword = /^(Question|Q|Answer|Solution)\b/i.test(t);
+  // Be tolerant: if the line contains the keyword anywhere, count it. 
+  // (Because pdf text can be "Que stion", spacing, or centered) 
+  const hasKeyword = /(Question|Answer|Solution)\b/i.test(t) || /\bQ\b/i.test(t); 
+
+  // And if it has the keyword, accept it — you want big blocks anyway. 
+  if (hasKeyword) return true;
 
   const isBigger = line.maxFont >= stats.medianFont * 1.15; // slightly larger than median
   const isShort = t.length <= 50;
@@ -177,7 +182,6 @@ function isHeaderLike(
   // Numeric-only headers are risky — require left + bigger + short
   const looksNumeric = /^\(?\d{1,3}\)?\s*([.)\-:])/.test(t);
 
-  if (hasKeyword) return isLeft || isBigger; // keyword is strong
   if (looksNumeric) return isLeft && isBigger && isShort;
 
   return false;
