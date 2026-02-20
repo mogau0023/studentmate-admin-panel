@@ -68,6 +68,13 @@ function matchHeaderNumber(lineText: string): { q: number; raw?: string } | null
     if (Number.isFinite(q)) return { q, raw: explicit[0] };
   }
 
+  // Dotted headers like "1.1." "2.2." "3.1." etc 
+  const dotted = t.match(/^(\d{1,3}(?:\.\d{1,3}){1,3})\.?\s+/); 
+  if (dotted) { 
+    const main = parseInt(dotted[1].split(".")[0], 10); 
+    if (Number.isFinite(main)) return { q: main, raw: dotted[0] }; 
+  }
+
   // Numeric header: "1)", "1.", "(1)", "1 -"
   const numeric = t.match(/^\(?(\d{1,3})\)?\s*([.)\-:])\s+/);
   if (numeric) {
