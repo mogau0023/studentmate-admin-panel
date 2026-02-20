@@ -65,7 +65,16 @@ export const parsePdf = async (file: File, onProgress?: (status: string) => void
         // (?:Question|Q|Answer|Solution) -> Keyword
         // [\s.:-]* -> Optional separator (space, dot, colon, dash)
         // (\d+) -> The number
-        const match = lineText.match(/(?:^|\s)(?:Question|Q|Answer|Solution)[\s.:-]*(\d+)/i);
+        // NEW: Also check for just "1" or "2" if it's a very short line (likely a header in a memo)
+        let match = lineText.match(/(?:^|\s)(?:Question|Q|Answer|Solution)[\s.:-]*(\d+)/i);
+        
+        // Fallback: If line is very short (e.g. "1" or "1." or "1.1"), treat as question number
+        if (!match && lineText.length < 10) {
+             const simpleMatch = lineText.match(/^(\d+)(?:[\.:]|$)/);
+             if (simpleMatch) {
+                 match = simpleMatch;
+             }
+        }
 
         if (match) {
           const pdfY = line.y;
@@ -104,7 +113,16 @@ export const parsePdf = async (file: File, onProgress?: (status: string) => void
           
           ocrLines.forEach((line: any) => {
             const text = line.text.trim();
-            const match = text.match(/(?:^|\s)(?:Question|Q|Answer|Solution)[\s.:-]*(\d+)/i);
+            // Same robust regex as above
+            let match = text.match(/(?:^|\s)(?:Question|Q|Answer|Solution)[\s.:-]*(\d+)/i);
+            
+            if (!match && text.length < 10) {
+                 const simpleMatch = text.match(/^(\d+)(?:[\.:]|$)/);
+                 if (simpleMatch) {
+                     match = simpleMatch;
+                 }
+            }
+
             if (match) {
               const y = line.bbox.y0; // OCR gives top-down Y
               if (!questionLocations.find(q => q.number === parseInt(match[1]))) {
