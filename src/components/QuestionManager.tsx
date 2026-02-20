@@ -33,6 +33,7 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
   const [extractedQuestions, setExtractedQuestions] = useState<ExtractedQuestion[]>([]);
   const [extractedAnswers, setExtractedAnswers] = useState<ExtractedQuestion[]>([]);
   const [parsing, setParsing] = useState(false);
+  const [parsingStatus, setParsingStatus] = useState('');
 
   useEffect(() => {
     fetchQuestions();
@@ -120,10 +121,11 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
     if (e.target.files && e.target.files[0]) {
       setBulkFile(e.target.files[0]);
       setParsing(true);
+      setParsingStatus('Initializing...');
       try {
-        const parsed = await parsePdf(e.target.files[0]);
+        const parsed = await parsePdf(e.target.files[0], (status) => setParsingStatus(status));
         if (parsed.length === 0) {
-          alert('No questions detected in the PDF. Please ensure the file is text-based (not scanned) and uses standard headings like "Question 1", "Q1", or "1."');
+          alert('No questions detected in the PDF. Please ensure the file uses standard headings like "Question 1" or "Q1".');
         }
         setExtractedQuestions(parsed);
       } catch (error) {
@@ -131,6 +133,7 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
         alert('Failed to parse PDF. Please ensure it is a valid PDF.');
       } finally {
         setParsing(false);
+        setParsingStatus('');
       }
     }
   };
@@ -139,10 +142,11 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
     if (e.target.files && e.target.files[0]) {
       setBulkFile(e.target.files[0]);
       setParsing(true);
+      setParsingStatus('Initializing...');
       try {
-        const parsed = await parsePdf(e.target.files[0]);
+        const parsed = await parsePdf(e.target.files[0], (status) => setParsingStatus(status));
         if (parsed.length === 0) {
-          alert('No answers detected in the Memo PDF. Please ensure the file uses "Question 1", "Answer 1", or "1." headings.');
+          alert('No answers detected in the Memo PDF. Please ensure the file uses "Question 1" or "Answer 1" headings.');
         }
         setExtractedAnswers(parsed);
       } catch (error) {
@@ -150,6 +154,7 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
         alert('Failed to parse Memo PDF.');
       } finally {
         setParsing(false);
+        setParsingStatus('');
       }
     }
   };
@@ -450,7 +455,8 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
 
                   {parsing && (
                     <div className="text-center py-4 text-purple-600 font-medium">
-                      Parsing Memo... Please wait.
+                      <div className="animate-pulse">{parsingStatus || 'Parsing Memo...'}</div>
+                      <p className="text-xs text-gray-500 mt-1">OCR is running, this may take a minute...</p>
                     </div>
                   )}
 
@@ -648,8 +654,9 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
                   </div>
 
                   {parsing && (
-                    <div className="text-center py-4 text-blue-600 font-medium">
-                      Parsing PDF... Please wait.
+                    <div className="text-center py-4 text-green-600 font-medium">
+                      <div className="animate-pulse">{parsingStatus || 'Parsing PDF...'}</div>
+                      <p className="text-xs text-gray-500 mt-1">OCR is running, this may take a minute...</p>
                     </div>
                   )}
 

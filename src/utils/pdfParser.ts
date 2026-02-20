@@ -1,4 +1,5 @@
 import * as pdfjsLib from 'pdfjs-dist';
+import Tesseract from 'tesseract.js';
 
 // Set the worker source to a local file in the public folder
 // This ensures the worker version matches the installed library and avoids CDN issues
@@ -15,87 +16,20 @@ export interface ExtractedQuestion {
   subQuestions?: { number: string; text: string; marks: number }[];
 }
 
-export const parsePdf = async (file: File): Promise<ExtractedQuestion[]> => {
+export const parsePdf = async (file: File, onProgress?: (status: string) => void): Promise<ExtractedQuestion[]> => {
   const arrayBuffer = await file.arrayBuffer();
   const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
   const pdf = await loadingTask.promise;
   
   const allQuestions: ExtractedQuestion[] = [];
-  let currentQuestionNumber = 0;
 
   for (let i = 1; i <= pdf.numPages; i++) {
+    if (onProgress) onProgress(`Processing Page ${i} of ${pdf.numPages}...`);
+
     const page = await pdf.getPage(i);
     const viewport = page.getViewport({ scale: 2.0 }); // High res for quality
     
-    // 1. Get Text Content for Coordinate Analysis
-    const textContent = await page.getTextContent();
-    
-    // Group text items by Y-coordinate (lines) to handle fragmented text
-    // PDF coordinates: Y starts from bottom. We group by roughly same Y.
-    const lines: { y: number, text: string, items: any[] }[] = [];
-    const TOLERANCE = 5; // Vertical tolerance in PDF units
-
-    textContent.items.forEach((item: any) => {
-      // Find an existing line that matches this item's Y
-      // transform[5] is Y in PDF space (bottom-up)
-      const itemY = item.transform[5];
-      const existingLine = lines.find(line => Math.abs(line.y - itemY) < TOLERANCE);
-
-      if (existingLine) {
-        existingLine.items.push(item);
-        // We'll re-sort and join text later
-      } else {
-        lines.push({ y: itemY, text: '', items: [item] });
-      }
-    });
-
-    // Sort lines by Y (Top to Bottom for reading order)
-    // In PDF space, higher Y is higher up on page. So sort Descending.
-    lines.sort((a, b) => b.y - a.y);
-
-    const questionLocations: { number: number, y: number }[] = [];
-
-    lines.forEach(line => {
-      // Sort items in line by X (Left to Right)
-      line.items.sort((a, b) => a.transform[4] - b.transform[4]);
-      // Join text
-      const lineText = line.items.map(i => i.str).join(' ');
-      
-      // Check for Question Pattern
-      // Matches: "Question 1", "Q1", "Question 1:", "1." (if enabled later)
-      // Added robustness: "Answer 1" for memos, and simple "1." if explicitly needed
-      // 2024-05-23: Expanded regex to catch "1.1", "1.2" etc and treat them as belonging to Question 1 if Q1 not found explicitly
-      // But primary goal is to find "Question 1" or "1"
-      
-      const lineTextTrimmed = lineText.trim();
-
-      // Only match Explicit "Question X" or "Answer X"
-      // Reverted loose numbering as per user request
-      let match = lineTextTrimmed.match(/^(?:Question|Q|Answer)\s*(\d+)/i);
-      
-      if (match) {
-        // Use the Y of the line (first item's Y)
-        // Convert to canvas space (top-down)
-        const pdfY = line.y;
-        const canvasY = viewport.height - (pdfY * viewport.scale);
-        
-        // Ensure we haven't already added this question number (avoid duplicates on same page)
-        if (!questionLocations.find(q => q.number === parseInt(match[1]))) {
-            questionLocations.push({ 
-              number: parseInt(match[1]), 
-              y: canvasY 
-            });
-        }
-      }
-    });
-
-    // Sort locations by Y position (top to bottom) within the page
-    questionLocations.sort((a, b) => a.y - b.y);
-
-    // If no questions found on this page, skip image generation (or handle continuation)
-    if (questionLocations.length === 0) continue;
-
-    // 2. Render Page to Canvas
+    // 1. Render Page to Canvas (Required for OCR)
     const canvas = document.createElement('canvas');
     const context = canvas.getContext('2d');
     canvas.height = viewport.height;
@@ -104,12 +38,45 @@ export const parsePdf = async (file: File): Promise<ExtractedQuestion[]> => {
     if (!context) continue;
 
     // Render context needs to match the type expected by pdf.js
-    // Casting to any to avoid strict type checking issues with pdfjs-dist types
     const renderContext: any = {
       canvasContext: context,
       viewport: viewport,
     };
     await page.render(renderContext).promise;
+
+    // 2. Run OCR using Tesseract.js
+    if (onProgress) onProgress(`Scanning text on Page ${i} (OCR)...`);
+    
+    const result = await Tesseract.recognize(canvas, 'eng');
+    const lines = (result.data as any).lines;
+    
+    const questionLocations: { number: number, y: number }[] = [];
+
+    lines.forEach(line => {
+      const text = line.text.trim();
+      // Match "Question 1", "Q1", "Answer 1"
+      // Note: Tesseract might return "Question 1" or "Question l" or "Question I" sometimes, but we stick to digits for now
+      const match = text.match(/^(?:Question|Q|Answer)\s*(\d+)/i);
+
+      if (match) {
+        // line.bbox gives coordinates directly in canvas space (top-down)
+        // bbox: { x0, y0, x1, y1 }
+        const y = line.bbox.y0;
+        
+        if (!questionLocations.find(q => q.number === parseInt(match[1]))) {
+            questionLocations.push({ 
+              number: parseInt(match[1]), 
+              y: y 
+            });
+        }
+      }
+    });
+
+    // Sort locations by Y position (top to bottom)
+    questionLocations.sort((a, b) => a.y - b.y);
+
+    // If no questions found on this page, skip image generation (or handle continuation)
+    if (questionLocations.length === 0) continue;
 
     // 3. Slice Canvas based on Question Locations
     for (let j = 0; j < questionLocations.length; j++) {
@@ -147,7 +114,7 @@ export const parsePdf = async (file: File): Promise<ExtractedQuestion[]> => {
         if (blob) {
           allQuestions.push({
             number: q.number,
-            text: `(Image Extracted from Page ${i})`,
+            text: `(OCR Extracted from Page ${i})`,
             marks: 0, // Default, user can edit
             imageBlob: blob,
             page: i,
@@ -156,7 +123,6 @@ export const parsePdf = async (file: File): Promise<ExtractedQuestion[]> => {
               yEnd: endY / 2.0
             }
           });
-          currentQuestionNumber = q.number;
         }
       }
     }
