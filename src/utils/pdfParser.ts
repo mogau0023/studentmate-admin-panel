@@ -69,6 +69,9 @@ function matchHeaderNumber(lineText: string): { q: number; raw?: string } | null
   }
 
   // Dotted headers like "1.1." "2.2." "3.1." etc 
+  // We want to IGNORE sub-questions for the main header list if possible, or map them to the main question.
+  // parseInt("1.1") returns 1. So "1.1" -> Question 1.
+  // This is correct behavior for grouping.
   const dotted = t.match(/^(\d{1,3}(?:\.\d{1,3}){1,3})\.?\s+/); 
   if (dotted) { 
     const main = parseInt(dotted[1].split(".")[0], 10); 
@@ -301,18 +304,30 @@ export const parsePdf = async (
         if (ln.minX <= stats.pageWidth * 0.2) confidence += 0.10;
         confidence = clamp(confidence, 0, 1);
 
-        // Deduplicate by question number: keep the highest confidence
-        const existing = headers.find((h) => h.number === qNum);
-        if (!existing || existing.confidence < confidence) {
-          if (existing) headers = headers.filter((h) => h.number !== qNum);
-          headers.push({
-            number: qNum,
-            yCanvas,
-            xCanvas,
-            confidence,
-            source: "TEXT",
-          });
-        }
+  // Deduplicate by question number: keep the highest confidence
+  const existing = headers.find((h) => h.number === qNum);
+  if (!existing || existing.confidence < confidence) {
+    if (existing) headers = headers.filter((h) => h.number !== qNum);
+    
+    // Ignore sub-questions if we already have a main question close by?
+    // Actually, user wants to GROUP by main question. 
+    // If we detect "1.1", matchHeaderNumber returns q=1 because of parseInt("1.1") -> 1
+    // So we are already effectively grouping 1.1 under 1. 
+    // BUT we need to make sure we don't overwrite the main "Question 1" header with "1.1" 
+    // if "Question 1" has higher confidence or is logically better.
+    
+    // Logic: If we found "Question 1" (confidence high), don't replace it with "1.1" (likely lower confidence or same).
+    // matchHeaderNumber parses "1.1" as 1. So they collide on qNum=1.
+    // The confidence scoring should handle this: "Question 1" gets +0.35 confidence. "1.1" (numeric) gets less.
+    
+    headers.push({
+      number: qNum,
+      yCanvas,
+      xCanvas,
+      confidence,
+      source: "TEXT",
+    });
+  }
       }
     } catch (e) {
       console.warn(`Text extraction failed on page ${i}`, e);
