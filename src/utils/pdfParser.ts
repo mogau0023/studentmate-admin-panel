@@ -33,6 +33,7 @@ type TextItem = any;
 
 type DetectedHeader = {
   number: number;
+  kind: "MAIN" | "SUB";
   yCanvas: number; // top-down
   xCanvas: number;
   confidence: number;
@@ -47,17 +48,22 @@ function normalizeSpaces(s: string) {
   return s.replace(/\s+/g, " ").trim();
 }
 
+type HeaderMatch = 
+  | { q: number; kind: "MAIN"; raw?: string } 
+  | { q: number; kind: "SUB"; raw?: string };
+
 /**
  * More robust patterns.
  * - Prefer explicit "Question/Q/Answer/Solution"
  * - Allow "Q.1", "Question 1:", "Question 1.1"
  * - Allow numeric header like "1)" or "1." but only if line is "header-like"
  */
-function matchHeaderNumber(lineText: string): { q: number; raw?: string } | null {
+function matchHeaderNumber(lineText: string): HeaderMatch | null {
   const t = normalizeSpaces(lineText);
 
-  // Explicit headers - Fuzzy match for "Q U E S T I O N", "Que stion", etc.
-  const QUESTION_FUZZY = /^(?:Q(?:\s*U\s*E\s*S\s*T\s*I\s*O\s*N)?|Q\s*u\s*e\s*s\s*t\s*i\s*o\s*n|Que\s*stion|Question|Answer|Solution)\s*[.:)\-]*\s*(\d+)/i; 
+  // MAIN headers (Question/Q/Answer/Solution ...) 
+  const QUESTION_FUZZY = 
+    /^(?:Q(?:\s*U\s*E\s*S\s*T\s*I\s*O\s*N)?|Q\s*u\s*e\s*s\s*t\s*i\s*o\s*n|Que\s*stion|Question|Answer|Solution)\s*[.:)\-]*\s*(\d+)/i; 
   
   const explicit = t.match(QUESTION_FUZZY) ||
     t.match(/^(?:Question|Q|Answer|Solution)\s+(\d+)/i) ||
@@ -65,24 +71,23 @@ function matchHeaderNumber(lineText: string): { q: number; raw?: string } | null
 
   if (explicit) {
     const q = parseInt(explicit[1], 10);
-    if (Number.isFinite(q)) return { q, raw: explicit[0] };
+    if (Number.isFinite(q)) return { q, kind: "MAIN", raw: explicit[0] };
   }
 
-  // Dotted headers like "1.1." "2.2." "3.1." etc 
-  // We want to IGNORE sub-questions for the main header list if possible, or map them to the main question.
-  // parseInt("1.1") returns 1. So "1.1" -> Question 1.
-  // This is correct behavior for grouping.
-  const dotted = t.match(/^(\d{1,3}(?:\.\d{1,3}){1,3})\.?\s+/); 
+  // SUB headers like "1.1." "2.2." "3.1." etc 
+  // We explicitly identify these as SUB so we can prioritize MAIN headers in deduping
+  const dotted = t.match(/^(\d{1,3})\.(\d{1,3})(?:\.)?\s*/); 
   if (dotted) { 
-    const main = parseInt(dotted[1].split(".")[0], 10); 
-    if (Number.isFinite(main)) return { q: main, raw: dotted[0] }; 
+    const q = parseInt(dotted[1], 10); 
+    if (Number.isFinite(q)) return { q, kind: "SUB", raw: dotted[0] }; 
   }
 
   // Numeric header: "1)", "1.", "(1)", "1 -"
+  // Treat as MAIN if it passes isHeaderLike checks
   const numeric = t.match(/^\(?(\d{1,3})\)?\s*([.)\-:])\s+/);
   if (numeric) {
     const q = parseInt(numeric[1], 10);
-    if (Number.isFinite(q)) return { q, raw: numeric[0] };
+    if (Number.isFinite(q)) return { q, kind: "MAIN", raw: numeric[0] };
   }
 
   return null;
@@ -299,35 +304,43 @@ export const parsePdf = async (
 
         // Confidence scoring
         let confidence = 0.5;
+        // Big boost if MAIN so it always beats SUB
+        if (candidate.kind === "MAIN") confidence += 0.6;
+
         if (/^(Question|Q|Answer|Solution)\b/i.test(lineText)) confidence += 0.35;
         if (ln.maxFont >= stats.medianFont * 1.2) confidence += 0.15;
         if (ln.minX <= stats.pageWidth * 0.2) confidence += 0.10;
         confidence = clamp(confidence, 0, 1);
 
-  // Deduplicate by question number: keep the highest confidence
-  const existing = headers.find((h) => h.number === qNum);
-  if (!existing || existing.confidence < confidence) {
-    if (existing) headers = headers.filter((h) => h.number !== qNum);
-    
-    // Ignore sub-questions if we already have a main question close by?
-    // Actually, user wants to GROUP by main question. 
-    // If we detect "1.1", matchHeaderNumber returns q=1 because of parseInt("1.1") -> 1
-    // So we are already effectively grouping 1.1 under 1. 
-    // BUT we need to make sure we don't overwrite the main "Question 1" header with "1.1" 
-    // if "Question 1" has higher confidence or is logically better.
-    
-    // Logic: If we found "Question 1" (confidence high), don't replace it with "1.1" (likely lower confidence or same).
-    // matchHeaderNumber parses "1.1" as 1. So they collide on qNum=1.
-    // The confidence scoring should handle this: "Question 1" gets +0.35 confidence. "1.1" (numeric) gets less.
-    
-    headers.push({
-      number: qNum,
-      yCanvas,
-      xCanvas,
-      confidence,
-      source: "TEXT",
-    });
-  }
+        // Deduplicate by question number: keep the highest confidence (prefer MAIN)
+        const existing = headers.find((h) => h.number === qNum);
+        
+        if (!existing) {
+          headers.push({
+            number: qNum,
+            kind: candidate.kind,
+            yCanvas,
+            xCanvas,
+            confidence,
+            source: "TEXT",
+          });
+        } else {
+          // Prefer MAIN over SUB always
+          const existingScore = existing.confidence + (existing.kind === "MAIN" ? 1 : 0);
+          const newScore = confidence + (candidate.kind === "MAIN" ? 1 : 0);
+
+          if (newScore > existingScore) {
+            headers = headers.filter((h) => h.number !== qNum);
+            headers.push({
+              number: qNum,
+              kind: candidate.kind,
+              yCanvas,
+              xCanvas,
+              confidence,
+              source: "TEXT",
+            });
+          }
+        }
       }
     } catch (e) {
       console.warn(`Text extraction failed on page ${i}`, e);
@@ -400,21 +413,40 @@ export const parsePdf = async (
             const xCanvasTextScale = (x0 / OCR_SCALE) * TEXT_SCALE;
 
             let confidence = 0.45;
+            // Big boost if MAIN
+            if (candidate.kind === "MAIN") confidence += 0.6;
+
             if (hasKeyword) confidence += 0.35;
             if (isLeft) confidence += 0.10;
             if (isTall) confidence += 0.10;
             confidence = clamp(confidence, 0, 1);
 
             const existing = headers.find((h2) => h2.number === candidate.q);
-            if (!existing || existing.confidence < confidence) {
-              if (existing) headers = headers.filter((h2) => h2.number !== candidate.q);
+            
+            if (!existing) {
               headers.push({
                 number: candidate.q,
+                kind: candidate.kind,
                 yCanvas: yCanvasTextScale,
                 xCanvas: xCanvasTextScale,
                 confidence,
                 source: "OCR",
               });
+            } else {
+               const existingScore = existing.confidence + (existing.kind === "MAIN" ? 1 : 0);
+               const newScore = confidence + (candidate.kind === "MAIN" ? 1 : 0);
+
+               if (newScore > existingScore) {
+                 headers = headers.filter((h2) => h2.number !== candidate.q);
+                 headers.push({
+                   number: candidate.q,
+                   kind: candidate.kind,
+                   yCanvas: yCanvasTextScale,
+                   xCanvas: xCanvasTextScale,
+                   confidence,
+                   source: "OCR",
+                 });
+               }
             }
           }
 
@@ -436,8 +468,20 @@ export const parsePdf = async (
     if (!canvasText) continue;
 
     // Clean up: remove headers that are too close to each other (duplicates)
+    // AND prioritize MAIN headers for slicing
+    
+    // 3) Slice using MAIN anchors only (if possible)
+    // If we have MAIN headers, we should primarily use them. 
+    // SUB headers might be useful if we have NO main headers, but generally we want to split by Q1, Q2...
+    
+    const anchors = headers.filter(h => h.kind === "MAIN");
+    // Fallback: if no MAIN headers found, use everything (maybe it's a doc with only "1.1", "1.2")
+    const headersToUse = anchors.length > 0 ? anchors : headers;
+    
+    headersToUse.sort((a, b) => a.yCanvas - b.yCanvas);
+
     const deduped: DetectedHeader[] = [];
-    for (const h of headers) {
+    for (const h of headersToUse) {
       const prev = deduped[deduped.length - 1];
       if (!prev) {
         deduped.push(h);
