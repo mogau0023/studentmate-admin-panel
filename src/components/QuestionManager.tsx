@@ -267,6 +267,18 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
     }
   };
 
+  const handleDeleteAnswer = async (question: Question) => {
+    if (window.confirm('Are you sure you want to remove the answer memo for this question?')) {
+      try {
+        await updateQuestion(assessmentId, question.questionId, {}, null, null, true);
+        fetchQuestions();
+      } catch (error) {
+        console.error('Error deleting answer:', error);
+        alert('Failed to delete answer.');
+      }
+    }
+  };
+
   const handleSaveResources = async (e: React.FormEvent) => {
     e.preventDefault();
     // Reverted resources implementation
@@ -382,6 +394,13 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
                                 <Check className="h-4 w-4" />
                                 <span className="text-sm">Answer Image Uploaded</span>
                                 <a href={q.answerUrl} target="_blank" rel="noreferrer" className="text-blue-500 text-xs hover:underline">(View)</a>
+                                <button
+                                  onClick={() => handleDeleteAnswer(q)}
+                                  className="text-red-500 hover:text-red-700 ml-2"
+                                  title="Delete Answer"
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </button>
                               </div>
                             ) : q.answerText ? (
                                 <div className="text-sm text-gray-700">{q.answerText}</div>

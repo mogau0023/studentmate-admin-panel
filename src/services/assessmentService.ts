@@ -115,7 +115,8 @@ export const updateQuestion = async (
   questionId: string,
   data: Partial<Question>,
   contentFile?: File | null,
-  answerFile?: File | null
+  answerFile?: File | null,
+  deleteAnswerImage: boolean = false
 ) => {
   const updates: any = { ...data };
 
@@ -126,11 +127,17 @@ export const updateQuestion = async (
     updates.contentUrl = await getDownloadURL(contentStorageRef);
   }
 
-  // Upload Answer Image if provided
+  // Handle Answer Image
   if (answerFile) {
+    // Upload new one
     const answerStorageRef = ref(storage, `questions/${assessmentId}/${Date.now()}_answer_${answerFile.name}`);
     await uploadBytes(answerStorageRef, answerFile);
     updates.answerUrl = await getDownloadURL(answerStorageRef);
+  } else if (deleteAnswerImage) {
+    // Explicitly delete existing answer
+    updates.answerUrl = null;
+    // Note: We should ideally delete the old file from storage too, but we need the old URL to do that.
+    // For now, nullifying the DB reference is sufficient to "remove" it from the UI.
   }
 
   await updateDoc(doc(db, COLLECTION_NAME, assessmentId, 'questions', questionId), updates);
