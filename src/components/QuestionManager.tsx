@@ -3,7 +3,7 @@ import { Plus, Trash2, Image as ImageIcon, Video, Check, FileText, Upload, Save,
 import { Question } from '../types';
 import { getQuestions, addQuestion, deleteQuestion, updateQuestion } from '../services/assessmentService';
 import Modal from './Modal';
-import { parsePdf, ExtractedQuestion } from '../utils/pdfParser';
+import { parsePdf, ExtractedQuestion, renderPageToBlob, cropRectFromPdf, getPageHeight, stitchBlobs } from '../utils/pdfParser';
 
 interface QuestionManagerProps {
   assessmentId: string;
@@ -34,6 +34,23 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
   const [extractedAnswers, setExtractedAnswers] = useState<ExtractedQuestion[]>([]);
   const [parsing, setParsing] = useState(false);
   const [parsingStatus, setParsingStatus] = useState('');
+
+  // Crop editor states
+  const [isCropEditorOpen, setIsCropEditorOpen] = useState(false);
+  const [cropTarget, setCropTarget] = useState<'answers' | 'questions'>('answers');
+  const [cropIndex, setCropIndex] = useState<number | null>(null);
+  const [cropPageNumber, setCropPageNumber] = useState<number>(1);
+  const [cropPageImageUrl, setCropPageImageUrl] = useState<string>('');
+  const [cropImgClientW, setCropImgClientW] = useState<number>(0);
+  const [cropImgClientH, setCropImgClientH] = useState<number>(0);
+  const [rectX, setRectX] = useState<number>(0);
+  const [rectY, setRectY] = useState<number>(0);
+  const [rectW, setRectW] = useState<number>(0);
+  const [rectH, setRectH] = useState<number>(200);
+  const [dragMode, setDragMode] = useState<string>('');
+  const [dragging, setDragging] = useState<boolean>(false);
+  const [sliceBlobs, setSliceBlobs] = useState<Blob[]>([]);
+  const TEXT_SCALE = 1.6;
 
   useEffect(() => {
     fetchQuestions();
@@ -159,6 +176,103 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
     }
   };
 
+  const openCropEditorAnswers = async (index: number) => {
+    if (!bulkFile) return;
+    const ans = extractedAnswers[index];
+    const page = ans.page || 1;
+    const pageBlob = await renderPageToBlob(bulkFile, page, TEXT_SCALE);
+    const pageUrl = pageBlob ? URL.createObjectURL(pageBlob) : '';
+    setCropTarget('answers');
+    setCropIndex(index);
+    setCropPageNumber(page);
+    setCropPageImageUrl(pageUrl);
+    setRectX(0);
+    const initY = Math.max(0, (ans.coordinates?.yStart || 0) * TEXT_SCALE);
+    const initH = Math.max(50, ((ans.coordinates?.yEnd || initY + 300) * TEXT_SCALE) - initY);
+    setRectY(initY);
+    setRectH(initH);
+    setRectW(0);
+    setSliceBlobs([]);
+    setIsCropEditorOpen(true);
+  };
+
+  const openCropEditorQuestions = async (index: number) => {
+    if (!bulkFile) return;
+    const q = extractedQuestions[index];
+    const page = q.page || 1;
+    const pageBlob = await renderPageToBlob(bulkFile, page, TEXT_SCALE);
+    const pageUrl = pageBlob ? URL.createObjectURL(pageBlob) : '';
+    setCropTarget('questions');
+    setCropIndex(index);
+    setCropPageNumber(page);
+    setCropPageImageUrl(pageUrl);
+    setRectX(0);
+    const initY = Math.max(0, (q.coordinates?.yStart || 0) * TEXT_SCALE);
+    const initH = Math.max(50, ((q.coordinates?.yEnd || initY + 300) * TEXT_SCALE) - initY);
+    setRectY(initY);
+    setRectH(initH);
+    setRectW(0);
+    setSliceBlobs([]);
+    setIsCropEditorOpen(true);
+  };
+
+  const saveCropEdits = async () => {
+    if (cropIndex === null || !bulkFile || !cropPageImageUrl) return;
+
+    const scaleX =
+      cropImgClientW > 0
+        ? await new Promise<number>((resolve) => {
+            const img = new Image();
+            img.onload = () => resolve(img.naturalWidth / cropImgClientW);
+            img.src = cropPageImageUrl;
+          })
+        : 1;
+
+    const scaleY =
+      cropImgClientH > 0
+        ? await new Promise<number>((resolve) => {
+            const img = new Image();
+            img.onload = () => resolve(img.naturalHeight / cropImgClientH);
+            img.src = cropPageImageUrl;
+          })
+        : 1;
+
+    const xCanvas = Math.max(0, (rectW === 0 ? 0 : rectX) * scaleX);
+    const yCanvas = Math.max(0, rectY * scaleY);
+    const wCanvas = Math.max(1, (rectW === 0 ? cropImgClientW : rectW) * scaleX);
+    const hCanvas = Math.max(1, rectH * scaleY);
+
+    const currentBlob = await cropRectFromPdf(bulkFile, cropPageNumber, xCanvas, yCanvas, wCanvas, hCanvas, TEXT_SCALE);
+    const all = currentBlob ? [...sliceBlobs, currentBlob] : [...sliceBlobs];
+    const stitched = await stitchBlobs(all);
+
+    if (!stitched) {
+      setIsCropEditorOpen(false);
+      return;
+    }
+
+    if (cropTarget === 'answers') {
+      const updated = [...extractedAnswers];
+      updated[cropIndex] = {
+        ...updated[cropIndex],
+        imageBlob: stitched,
+      };
+      setExtractedAnswers(updated);
+    } else {
+      const updated = [...extractedQuestions];
+      updated[cropIndex] = {
+        ...updated[cropIndex],
+        imageBlob: stitched,
+      };
+      setExtractedQuestions(updated);
+    }
+
+    setIsCropEditorOpen(false);
+    setCropIndex(null);
+    setCropPageImageUrl('');
+    setSliceBlobs([]);
+  };
+
   const handleSaveBulkMemo = async () => {
     if (extractedAnswers.length === 0) return;
 
@@ -167,21 +281,22 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
       // Loop through extracted answers and try to match with existing questions
       for (const ans of extractedAnswers) {
         // Find matching question by number/order
-        const matchingQuestion = questions.find(q => 
-          q.title.toLowerCase().includes(`question ${ans.number}`) || 
-          q.title.toLowerCase() === `q${ans.number}` ||
-          q.order === ans.number
+        const matchingQuestion = questions.find(
+          (q) =>
+            q.title.toLowerCase().includes(`question ${ans.number}`) ||
+            q.title.toLowerCase() === `q${ans.number}` ||
+            q.order === ans.number
         );
 
         if (matchingQuestion && ans.imageBlob) {
-           const answerFile = new File([ans.imageBlob], `answer_${ans.number}.jpg`, { type: 'image/jpeg' });
-           await updateQuestion(
-             assessmentId,
-             matchingQuestion.questionId,
-             {}, // No data update, just file
-             null, // no content file
-             answerFile // update answer file
-           );
+          const answerFile = new File([ans.imageBlob], `answer_${ans.number}.jpg`, { type: 'image/jpeg' });
+          await updateQuestion(
+            assessmentId,
+            matchingQuestion.questionId,
+            {}, // No data update, just file
+            null, // no content file
+            answerFile // update answer file
+          );
         }
       }
       setIsBulkMemoModalOpen(false);
@@ -218,11 +333,11 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
           q.marks,
           currentOrder++,
           contentFile,
-          q.text,    // content (text description or fallback)
+          q.text, // content (text description or fallback)
           undefined, // answerFile
           undefined, // answerText
           undefined, // videoUrl
-          q.page,    // page
+          q.page, // page
           q.coordinates // coordinates
         );
       }
@@ -284,12 +399,246 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
     // Reverted resources implementation
   };
 
+  // ✅ Shared crop editor block (used by BOTH Bulk Upload Memo + Bulk Upload PDF)
+  const CropEditor = isCropEditorOpen ? (
+    <div className="border-2 border-purple-300 rounded-lg p-3 bg-purple-50">
+      <div className="mb-2">
+        <label className="block text-sm font-medium text-gray-700">Page</label>
+        <input
+          type="number"
+          min={1}
+          value={cropPageNumber}
+          onChange={async (e) => {
+            const p = parseInt(e.target.value) || 1;
+            setCropPageNumber(p);
+            if (!bulkFile) return;
+            const pageBlob = await renderPageToBlob(bulkFile, p, TEXT_SCALE);
+            const pageUrl = pageBlob ? URL.createObjectURL(pageBlob) : '';
+            setCropPageImageUrl(pageUrl);
+            setRectX(0);
+            setRectY(0);
+            setRectW(0);
+            setRectH(200);
+          }}
+          className="mt-1 block w-24 border border-gray-300 rounded-md py-1 px-2 text-sm"
+        />
+      </div>
+
+      <div
+        className="relative border rounded bg-white overflow-auto max-h-[60vh]"
+        onMouseMove={(e) => {
+          if (!dragging) return;
+          const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
+          const x = e.clientX - rect.left;
+          const y = e.clientY - rect.top + (e.currentTarget.scrollTop || 0);
+
+          let nx = rectX;
+          let ny = rectY;
+          let nw = rectW || cropImgClientW;
+          let nh = rectH;
+
+          if (dragMode === 'move') {
+            const dx = x - nx;
+            const dy = y - ny;
+            nx = Math.max(0, Math.min((cropImgClientW || nw) - nw, rectX + dx));
+            ny = Math.max(0, Math.min((cropImgClientH || nh) - nh, rectY + dy));
+          } else if (dragMode === 'n') {
+            const newY = Math.max(0, Math.min(rectY + rectH - 10, y));
+            nh = rectH + (rectY - newY);
+            ny = newY;
+          } else if (dragMode === 's') {
+            nh = Math.max(10, Math.min((cropImgClientH || nh) - rectY, y - rectY));
+          } else if (dragMode === 'w') {
+            const newX = Math.max(0, Math.min(rectX + nw - 10, x));
+            nw = nw + (rectX - newX);
+            nx = newX;
+          } else if (dragMode === 'e') {
+            nw = Math.max(10, Math.min((cropImgClientW || nw) - rectX, x - rectX));
+          } else if (dragMode === 'nw') {
+            const newX = Math.max(0, Math.min(rectX + nw - 10, x));
+            const newY = Math.max(0, Math.min(rectY + rectH - 10, y));
+            nw = nw + (rectX - newX);
+            nx = newX;
+            nh = rectH + (rectY - newY);
+            ny = newY;
+          } else if (dragMode === 'ne') {
+            const newY = Math.max(0, Math.min(rectY + rectH - 10, y));
+            nh = rectH + (rectY - newY);
+            ny = newY;
+            nw = Math.max(10, Math.min((cropImgClientW || nw) - rectX, x - rectX));
+          } else if (dragMode === 'sw') {
+            nw = nw + Math.max(-nw + 10, Math.min(0, x - rectX));
+            nh = Math.max(10, Math.min((cropImgClientH || nh) - rectY, y - rectY));
+            nx = Math.max(0, Math.min(rectX + nw - 10, rectX - (x - rectX)));
+          } else if (dragMode === 'se') {
+            nw = Math.max(10, Math.min((cropImgClientW || nw) - rectX, x - rectX));
+            nh = Math.max(10, Math.min((cropImgClientH || nh) - rectY, y - rectY));
+          }
+
+          setRectX(nx);
+          setRectY(ny);
+          setRectW(nw);
+          setRectH(nh);
+        }}
+        onMouseUp={() => {
+          setDragging(false);
+          setDragMode('');
+        }}
+        onMouseLeave={() => {
+          setDragging(false);
+          setDragMode('');
+        }}
+      >
+        {cropPageImageUrl && (
+          <img
+            src={cropPageImageUrl}
+            alt="Page"
+            className="max-w-full"
+            onLoad={(e) => {
+              const el = e.currentTarget as HTMLImageElement;
+              setCropImgClientW(el.clientWidth);
+              setCropImgClientH(el.clientHeight);
+              setRectW((prev) => (prev === 0 ? el.clientWidth : prev));
+            }}
+          />
+        )}
+
+        <div
+          className="absolute border-2 border-purple-600 bg-purple-200/10"
+          style={{
+            left: `${rectX}px`,
+            top: `${rectY}px`,
+            width: `${rectW || cropImgClientW}px`,
+            height: `${rectH}px`,
+            cursor: dragging ? 'grabbing' : 'move',
+          }}
+          onMouseDown={(e) => {
+            e.preventDefault();
+            setDragMode('move');
+            setDragging(true);
+          }}
+        >
+          {['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'].map((pos) => {
+            const size = 10;
+            const style: any = { position: 'absolute', width: `${size}px`, height: `${size}px`, background: '#7c3aed' };
+            if (pos === 'nw') {
+              style.left = '-5px';
+              style.top = '-5px';
+            }
+            if (pos === 'n') {
+              style.left = '50%';
+              style.top = '-5px';
+              style.transform = 'translateX(-50%)';
+            }
+            if (pos === 'ne') {
+              style.right = '-5px';
+              style.top = '-5px';
+            }
+            if (pos === 'e') {
+              style.right = '-5px';
+              style.top = '50%';
+              style.transform = 'translateY(-50%)';
+            }
+            if (pos === 'se') {
+              style.right = '-5px';
+              style.bottom = '-5px';
+            }
+            if (pos === 's') {
+              style.left = '50%';
+              style.bottom = '-5px';
+              style.transform = 'translateX(-50%)';
+            }
+            if (pos === 'sw') {
+              style.left = '-5px';
+              style.bottom = '-5px';
+            }
+            if (pos === 'w') {
+              style.left = '-5px';
+              style.top = '50%';
+              style.transform = 'translateY(-50%)';
+            }
+            return (
+              <div
+                key={pos}
+                style={style}
+                onMouseDown={(e) => {
+                  e.stopPropagation();
+                  setDragMode(pos);
+                  setDragging(true);
+                }}
+              />
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="flex justify-between items-center mt-3">
+        <div className="text-xs text-gray-600">Slices: {sliceBlobs.length}</div>
+        <div className="flex space-x-2">
+          <button
+            onClick={async () => {
+              const scaleX =
+                cropImgClientW > 0
+                  ? await new Promise<number>((resolve) => {
+                      const img = new Image();
+                      img.onload = () => resolve(img.naturalWidth / cropImgClientW);
+                      img.src = cropPageImageUrl;
+                    })
+                  : 1;
+
+              const scaleY =
+                cropImgClientH > 0
+                  ? await new Promise<number>((resolve) => {
+                      const img = new Image();
+                      img.onload = () => resolve(img.naturalHeight / cropImgClientH);
+                      img.src = cropPageImageUrl;
+                    })
+                  : 1;
+
+              const xCanvas = Math.max(0, (rectW === 0 ? 0 : rectX) * scaleX);
+              const yCanvas = Math.max(0, rectY * scaleY);
+              const wCanvas = Math.max(1, (rectW === 0 ? cropImgClientW : rectW) * scaleX);
+              const hCanvas = Math.max(1, rectH * scaleY);
+
+              const blob = await cropRectFromPdf(bulkFile!, cropPageNumber, xCanvas, yCanvas, wCanvas, hCanvas, TEXT_SCALE);
+              if (blob) setSliceBlobs((prev) => [...prev, blob]);
+            }}
+            className="px-3 py-2 rounded bg-indigo-600 text-white text-sm"
+          >
+            Add Slice
+          </button>
+
+          <button onClick={() => setSliceBlobs([])} className="px-3 py-2 rounded bg-gray-200 text-gray-800 text-sm">
+            Clear Slices
+          </button>
+
+          <button onClick={saveCropEdits} className="px-3 py-2 rounded bg-purple-600 text-white text-sm">
+            Save Crop
+          </button>
+
+          <button
+            onClick={() => {
+              setIsCropEditorOpen(false);
+              setDragMode('');
+              setDragging(false);
+            }}
+            className="px-3 py-2 rounded bg-gray-100 text-gray-700 text-sm"
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  ) : null;
+
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto" aria-labelledby="modal-title" role="dialog" aria-modal="true">
       <div className="flex items-end justify-center min-h-screen pt-4 px-4 pb-20 text-center sm:block sm:p-0">
         <div className="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity" aria-hidden="true" onClick={onClose}></div>
 
-        <span className="hidden sm:inline-block sm:align-middle sm:h-screen" aria-hidden="true">&#8203;</span>
+        <span className="hidden sm:inline-block sm:align-middle sm:h-screen" aria-hidden="true">
+          &#8203;
+        </span>
 
         <div className="inline-block align-bottom bg-white rounded-lg text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-5xl sm:w-full">
           <div className="bg-white px-4 pt-5 pb-4 sm:p-6 sm:pb-4">
@@ -298,9 +647,7 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
                 <h3 className="text-lg leading-6 font-medium text-gray-900" id="modal-title">
                   Manage Questions: {assessmentTitle}
                 </h3>
-                <p className="mt-1 text-sm text-gray-500">
-                  Add questions via image upload or auto-parse from PDF.
-                </p>
+                <p className="mt-1 text-sm text-gray-500">Add questions via image upload or auto-parse from PDF.</p>
               </div>
               <div className="flex space-x-3">
                 <button
@@ -324,10 +671,7 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
                   <Plus className="h-5 w-5" />
                   <span>Add Manual</span>
                 </button>
-                <button
-                  onClick={onClose}
-                  className="bg-gray-100 hover:bg-gray-200 text-gray-700 px-4 py-2 rounded-lg"
-                >
+                <button onClick={onClose} className="bg-gray-100 hover:bg-gray-200 text-gray-700 px-4 py-2 rounded-lg">
                   Close
                 </button>
               </div>
@@ -354,18 +698,10 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
                           <span className="bg-gray-200 text-gray-700 px-2 py-1 rounded-full text-xs font-bold">
                             {q.marks} Marks
                           </span>
-                          <button
-                            onClick={() => handleOpenModal(q)}
-                            className="text-blue-500 hover:text-blue-700"
-                            title="Edit Question"
-                          >
+                          <button onClick={() => handleOpenModal(q)} className="text-blue-500 hover:text-blue-700" title="Edit Question">
                             <Edit2 className="h-5 w-5" />
                           </button>
-                          <button
-                            onClick={() => handleDelete(q)}
-                            className="text-red-500 hover:text-red-700"
-                            title="Delete Question"
-                          >
+                          <button onClick={() => handleDelete(q)} className="text-red-500 hover:text-red-700" title="Delete Question">
                             <Trash2 className="h-5 w-5" />
                           </button>
                         </div>
@@ -393,7 +729,14 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
                               <div className="flex items-center space-x-2 text-green-600">
                                 <Check className="h-4 w-4" />
                                 <span className="text-sm">Answer Image Uploaded</span>
-                                <a href={q.answerUrl} target="_blank" rel="noreferrer" className="text-blue-500 text-xs hover:underline">(View)</a>
+                                <a
+                                  href={q.answerUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="text-blue-500 text-xs hover:underline"
+                                >
+                                  (View)
+                                </a>
                                 <button
                                   onClick={() => handleDeleteAnswer(q)}
                                   className="text-red-500 hover:text-red-700 ml-2"
@@ -403,7 +746,7 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
                                 </button>
                               </div>
                             ) : q.answerText ? (
-                                <div className="text-sm text-gray-700">{q.answerText}</div>
+                              <div className="text-sm text-gray-700">{q.answerText}</div>
                             ) : (
                               <span className="text-sm text-gray-400">No answer provided</span>
                             )}
@@ -413,7 +756,12 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
                             {q.videoUrl ? (
                               <div className="flex items-center space-x-2 text-blue-600">
                                 <Video className="h-4 w-4" />
-                                <a href={q.videoUrl} target="_blank" rel="noreferrer" className="text-sm hover:underline truncate block max-w-[200px]">
+                                <a
+                                  href={q.videoUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="text-sm hover:underline truncate block max-w-[200px]"
+                                >
                                   {q.videoUrl}
                                 </a>
                               </div>
@@ -439,7 +787,9 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
             <div className="fixed inset-0 transition-opacity" aria-hidden="true">
               <div className="absolute inset-0 bg-gray-500 opacity-75"></div>
             </div>
-            <span className="hidden sm:inline-block sm:align-middle sm:h-screen" aria-hidden="true">&#8203;</span>
+            <span className="hidden sm:inline-block sm:align-middle sm:h-screen" aria-hidden="true">
+              &#8203;
+            </span>
             <div className="inline-block align-bottom bg-white rounded-lg text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-4xl sm:w-full">
               <div className="bg-white px-4 pt-5 pb-4 sm:p-6 sm:pb-4">
                 <div className="flex justify-between items-center mb-6">
@@ -453,21 +803,13 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
                   <p className="text-sm text-gray-600">
                     Upload a PDF containing the memorandum. The system will try to match "Question 1" in the memo to "Question 1" in your list.
                   </p>
-                  
+
                   {/* File Upload Area */}
                   <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:bg-gray-50 transition-colors">
-                    <input
-                      type="file"
-                      accept=".pdf"
-                      onChange={handleBulkMemoChange}
-                      className="hidden"
-                      id="bulk-memo-upload"
-                    />
+                    <input type="file" accept=".pdf" onChange={handleBulkMemoChange} className="hidden" id="bulk-memo-upload" />
                     <label htmlFor="bulk-memo-upload" className="cursor-pointer block">
                       <Upload className="mx-auto h-12 w-12 text-purple-400" />
-                      <p className="mt-2 text-sm text-gray-600">
-                        {bulkFile ? bulkFile.name : "Click to upload Memo PDF"}
-                      </p>
+                      <p className="mt-2 text-sm text-gray-600">{bulkFile ? bulkFile.name : 'Click to upload Memo PDF'}</p>
                       <p className="text-xs text-gray-500 mt-1">PDFs with selectable text only</p>
                     </label>
                   </div>
@@ -478,6 +820,9 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
                       <p className="text-xs text-gray-500 mt-1">OCR is running, this may take a minute...</p>
                     </div>
                   )}
+
+                  {/* ✅ Crop Editor (shared) */}
+                  {CropEditor}
 
                   {/* Extracted Answers Preview */}
                   {extractedAnswers.length > 0 && (
@@ -499,31 +844,31 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
                           <div key={index} className="bg-purple-50 p-4 rounded-lg border border-purple-200">
                             <div className="flex justify-between items-start mb-2">
                               <div className="flex items-center space-x-2">
-                                <span className="bg-purple-100 text-purple-800 text-xs font-bold px-2 py-1 rounded">
-                                  #{q.number}
-                                </span>
+                                <span className="bg-purple-100 text-purple-800 text-xs font-bold px-2 py-1 rounded">#{q.number}</span>
                                 <span className="text-xs text-gray-500">Detected Answer Section</span>
                               </div>
-                              <button
-                                onClick={() => handleRemoveExtractedAnswer(index)}
-                                className="text-red-500 hover:text-red-700"
-                              >
+                              <button onClick={() => handleRemoveExtractedAnswer(index)} className="text-red-500 hover:text-red-700">
                                 <X className="h-4 w-4" />
                               </button>
                             </div>
-                            
+
                             {/* Image Preview */}
                             {q.imageBlob ? (
                               <div className="border border-purple-200 rounded p-2 bg-white flex justify-center">
-                                <img 
-                                  src={URL.createObjectURL(q.imageBlob)} 
-                                  alt={`Answer ${q.number}`} 
-                                  className="max-w-full max-h-64 object-contain"
-                                />
+                                <img src={URL.createObjectURL(q.imageBlob)} alt={`Answer ${q.number}`} className="max-w-full max-h-64 object-contain" />
                               </div>
                             ) : (
-                               <div className="text-sm text-gray-500 italic">No image extracted</div>
+                              <div className="text-sm text-gray-500 italic">No image extracted</div>
                             )}
+
+                            <div className="mt-2 flex justify-end">
+                              <button
+                                onClick={() => openCropEditorAnswers(index)}
+                                className="text-white bg-purple-600 hover:bg-purple-700 px-3 py-1 rounded text-xs"
+                              >
+                                Edit Crop
+                              </button>
+                            </div>
                           </div>
                         ))}
                       </div>
@@ -540,7 +885,7 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
       <Modal
         isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}
-        title={editingQuestionId ? "Edit Question" : "Add New Question (Manual)"}
+        title={editingQuestionId ? 'Edit Question' : 'Add New Question (Manual)'}
       >
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
@@ -581,14 +926,27 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700">Question Image {editingQuestionId ? '(Optional - Leave empty to keep existing)' : '(Required)'}</label>
+            <label className="block text-sm font-medium text-gray-700">
+              Question Image {editingQuestionId ? '(Optional - Leave empty to keep existing)' : '(Required)'}
+            </label>
             <div className="mt-1 flex justify-center px-6 pt-5 pb-6 border-2 border-gray-300 border-dashed rounded-md">
               <div className="space-y-1 text-center">
                 <ImageIcon className="mx-auto h-12 w-12 text-gray-400" />
                 <div className="flex text-sm text-gray-600">
-                  <label htmlFor="content-upload" className="relative cursor-pointer bg-white rounded-md font-medium text-blue-600 hover:text-blue-500 focus-within:outline-none focus-within:ring-2 focus-within:ring-offset-2 focus-within:ring-blue-500">
+                  <label
+                    htmlFor="content-upload"
+                    className="relative cursor-pointer bg-white rounded-md font-medium text-blue-600 hover:text-blue-500 focus-within:outline-none focus-within:ring-2 focus-within:ring-offset-2 focus-within:ring-blue-500"
+                  >
                     <span>Upload a file</span>
-                    <input id="content-upload" name="content-upload" type="file" className="sr-only" accept="image/*" onChange={(e) => setContentFile(e.target.files ? e.target.files[0] : null)} required={!editingQuestionId} />
+                    <input
+                      id="content-upload"
+                      name="content-upload"
+                      type="file"
+                      className="sr-only"
+                      accept="image/*"
+                      onChange={(e) => setContentFile(e.target.files ? e.target.files[0] : null)}
+                      required={!editingQuestionId}
+                    />
                   </label>
                   <p className="pl-1">or drag and drop</p>
                 </div>
@@ -628,7 +986,9 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
             <button
               type="submit"
               disabled={submitting}
-              className={`w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-blue-600 text-base font-medium text-white hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 sm:text-sm ${submitting ? 'opacity-75 cursor-not-allowed' : ''}`}
+              className={`w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-blue-600 text-base font-medium text-white hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 sm:text-sm ${
+                submitting ? 'opacity-75 cursor-not-allowed' : ''
+              }`}
             >
               {submitting ? 'Saving Question...' : 'Save Question'}
             </button>
@@ -643,7 +1003,9 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
             <div className="fixed inset-0 transition-opacity" aria-hidden="true">
               <div className="absolute inset-0 bg-gray-500 opacity-75"></div>
             </div>
-            <span className="hidden sm:inline-block sm:align-middle sm:h-screen" aria-hidden="true">&#8203;</span>
+            <span className="hidden sm:inline-block sm:align-middle sm:h-screen" aria-hidden="true">
+              &#8203;
+            </span>
             <div className="inline-block align-bottom bg-white rounded-lg text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-4xl sm:w-full">
               <div className="bg-white px-4 pt-5 pb-4 sm:p-6 sm:pb-4">
                 <div className="flex justify-between items-center mb-6">
@@ -656,18 +1018,10 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
                 <div className="space-y-6">
                   {/* File Upload Area */}
                   <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:bg-gray-50 transition-colors">
-                    <input
-                      type="file"
-                      accept=".pdf"
-                      onChange={handleBulkFileChange}
-                      className="hidden"
-                      id="bulk-upload"
-                    />
+                    <input type="file" accept=".pdf" onChange={handleBulkFileChange} className="hidden" id="bulk-upload" />
                     <label htmlFor="bulk-upload" className="cursor-pointer block">
                       <Upload className="mx-auto h-12 w-12 text-gray-400" />
-                      <p className="mt-2 text-sm text-gray-600">
-                        {bulkFile ? bulkFile.name : "Click to upload Exam PDF"}
-                      </p>
+                      <p className="mt-2 text-sm text-gray-600">{bulkFile ? bulkFile.name : 'Click to upload Exam PDF'}</p>
                       <p className="text-xs text-gray-500 mt-1">PDFs with selectable text only</p>
                     </label>
                   </div>
@@ -678,6 +1032,9 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
                       <p className="text-xs text-gray-500 mt-1">OCR is running, this may take a minute...</p>
                     </div>
                   )}
+
+                  {/* ✅ Crop Editor (shared) */}
+                  {CropEditor}
 
                   {/* Extracted Questions Preview */}
                   {extractedQuestions.length > 0 && (
@@ -699,9 +1056,7 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
                           <div key={index} className="bg-gray-50 p-4 rounded-lg border border-gray-200">
                             <div className="flex justify-between items-start mb-2">
                               <div className="flex items-center space-x-2">
-                                <span className="bg-blue-100 text-blue-800 text-xs font-bold px-2 py-1 rounded">
-                                  #{q.number}
-                                </span>
+                                <span className="bg-blue-100 text-blue-800 text-xs font-bold px-2 py-1 rounded">#{q.number}</span>
                                 <input
                                   type="number"
                                   value={q.marks}
@@ -711,30 +1066,36 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
                                 />
                                 <span className="text-xs text-gray-500">marks</span>
                               </div>
-                              <button
-                                onClick={() => handleRemoveExtracted(index)}
-                                className="text-red-500 hover:text-red-700"
-                              >
+                              <button onClick={() => handleRemoveExtracted(index)} className="text-red-500 hover:text-red-700">
                                 <X className="h-4 w-4" />
                               </button>
                             </div>
-                            
+
                             {/* Image Preview instead of Text Area */}
                             {q.imageBlob ? (
                               <div className="border border-gray-300 rounded p-2 bg-white flex justify-center">
-                                <img 
-                                  src={URL.createObjectURL(q.imageBlob)} 
-                                  alt={`Question ${q.number}`} 
+                                <img
+                                  src={URL.createObjectURL(q.imageBlob)}
+                                  alt={`Question ${q.number}`}
                                   className="max-w-full max-h-64 object-contain"
                                 />
                               </div>
                             ) : (
-                               <textarea
+                              <textarea
                                 value={q.text}
                                 onChange={(e) => handleUpdateExtracted(index, 'text', e.target.value)}
                                 className="w-full text-sm border-gray-300 rounded p-2 h-24 font-serif"
                               />
                             )}
+
+                            <div className="mt-2 flex justify-end">
+                              <button
+                                onClick={() => openCropEditorQuestions(index)}
+                                className="text-white bg-blue-600 hover:bg-blue-700 px-3 py-1 rounded text-xs"
+                              >
+                                Edit Crop
+                              </button>
+                            </div>
                           </div>
                         ))}
                       </div>

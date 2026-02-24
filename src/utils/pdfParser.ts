@@ -9,33 +9,23 @@ export interface ExtractedQuestion {
   text: string;
   marks: number;
   answerText?: string;
+
+  // ✅ new: all parts (useful if you later want carousel / pagination)
+  imageBlobs?: Blob[];
+
+  // ✅ kept: single stitched image for your current UI
   imageBlob?: Blob;
-  page: number;
+
+  page: number; // first page it starts on
   coordinates: { yStart: number; yEnd: number };
   subQuestions?: { number: string; text: string; marks: number }[];
 }
 
-/**
- * WHY PDFs WERE "CHOOSY":
- * - text extraction items are not consistent across PDFs
- * - simple Y-only grouping breaks on multi-column / mixed fonts
- * - numeric fallback matched page numbers / mark allocations
- * - OCR was too heavy and ran too often
- *
- * This version:
- * - groups text into lines using adaptive Y bucket + sorts by X
- * - detects "header-like" lines using left margin + font size + patterns
- * - OCR only when text items are too few OR no headers found
- * - renders page canvas once per page and reuses it
- */
-
 type TextItem = any;
 
 type DetectedHeader = {
-  number: number;
-  kind: "MAIN" | "SUB";
+  number: number; // MAIN question number
   yCanvas: number; // top-down
-  xCanvas: number;
   confidence: number;
   source: "TEXT" | "OCR";
 };
@@ -48,54 +38,37 @@ function normalizeSpaces(s: string) {
   return s.replace(/\s+/g, " ").trim();
 }
 
-type HeaderMatch = 
-  | { q: number; kind: "MAIN"; raw?: string } 
-  | { q: number; kind: "SUB"; raw?: string };
-
-/**
- * More robust patterns.
- * - Prefer explicit "Question/Q/Answer/Solution"
- * - Allow "Q.1", "Question 1:", "Question 1.1"
- * - Allow numeric header like "1)" or "1." but only if line is "header-like"
- */
-function matchHeaderNumber(lineText: string): HeaderMatch | null {
+function matchHeaderNumber(lineText: string): { q: number } | null {
   const t = normalizeSpaces(lineText);
 
-  // MAIN headers (Question/Q/Answer/Solution ...) 
-  const QUESTION_FUZZY = 
-    /^(?:Q(?:\s*U\s*E\s*S\s*T\s*I\s*O\s*N)?|Q\s*u\s*e\s*s\s*t\s*i\s*o\s*n|Que\s*stion|Question|Answer|Solution)\s*[.:)\-]*\s*(\d+)/i; 
-  
-  const explicit = t.match(QUESTION_FUZZY) ||
-    t.match(/^(?:Question|Q|Answer|Solution)\s+(\d+)/i) ||
-    t.match(/^(?:Q)\s*[.]?\s*(\d+)/i);
+  // Match "Question 1", "Q 1", "Q.1", "Q U E S T I O N 1"
+  const QUESTION_FUZZY =
+    /^(?:Q(?:\s*U\s*E\s*S\s*T\s*I\s*O\s*N)?|Question|Answer|Solution)\s*[.:)\-]*\s*(\d+)/i;
 
+  const explicit = t.match(QUESTION_FUZZY);
   if (explicit) {
     const q = parseInt(explicit[1], 10);
-    if (Number.isFinite(q)) return { q, kind: "MAIN", raw: explicit[0] };
+    if (Number.isFinite(q)) return { q };
   }
 
-  // SUB headers like "1.1." "2.2." "3.1." etc 
-  // We explicitly identify these as SUB so we can prioritize MAIN headers in deduping
-  const dotted = t.match(/^(\d{1,3})\.(\d{1,3})(?:\.)?\s*/); 
-  if (dotted) { 
-    const q = parseInt(dotted[1], 10); 
-    if (Number.isFinite(q)) return { q, kind: "SUB", raw: dotted[0] }; 
+  // "1.1", "1.2", "2.3" -> treat as main question number
+  const dotted = t.match(/^(\d{1,3})\.(\d{1,3})(?:\.\d{1,3})?/);
+  if (dotted) {
+    const q = parseInt(dotted[1], 10);
+    if (Number.isFinite(q)) return { q };
   }
 
-  // Numeric header: "1)", "1.", "(1)", "1 -"
-  // Treat as MAIN if it passes isHeaderLike checks
+  // Numeric header fallback: "1)", "1."
   const numeric = t.match(/^\(?(\d{1,3})\)?\s*([.)\-:])\s+/);
   if (numeric) {
     const q = parseInt(numeric[1], 10);
-    if (Number.isFinite(q)) return { q, kind: "MAIN", raw: numeric[0] };
+    if (Number.isFinite(q)) return { q };
   }
 
   return null;
 }
 
 function computeFontHeight(item: TextItem): number {
-  // transform[3] often correlates with font size/height
-  // In some PDFs it can be negative; use abs
   const h = item?.transform?.[3];
   return Math.abs(typeof h === "number" ? h : 0);
 }
@@ -111,19 +84,9 @@ function computeY(item: TextItem): number {
 }
 
 function pdfYToCanvasY(pdfY: number, viewport: any) {
-  // pdf space is bottom-up. canvas is top-down
   return viewport.height - pdfY * viewport.scale;
 }
 
-function pdfXToCanvasX(pdfX: number, viewport: any) {
-  return pdfX * viewport.scale;
-}
-
-/**
- * Group PDF text items into lines using an adaptive Y bucket.
- * - Uses median font height to decide tolerance.
- * - Sorts items within a line by X.
- */
 function groupItemsIntoLines(items: TextItem[]) {
   if (!items?.length) return [];
 
@@ -132,9 +95,8 @@ function groupItemsIntoLines(items: TextItem[]) {
     .filter((h) => h > 0)
     .sort((a, b) => a - b);
 
-  const medianH =
-    heights.length === 0 ? 10 : heights[Math.floor(heights.length / 2)];
-  const TOL = clamp(medianH * 0.6, 3, 10); // adaptive tolerance
+  const medianH = heights.length ? heights[Math.floor(heights.length / 2)] : 10;
+  const TOL = clamp(medianH * 0.6, 3, 10);
 
   const lines: { y: number; items: TextItem[] }[] = [];
 
@@ -148,51 +110,21 @@ function groupItemsIntoLines(items: TextItem[]) {
     line.items.push(it);
   }
 
-  // Sort lines top-to-bottom (descending PDF y)
   lines.sort((a, b) => b.y - a.y);
 
-  // Sort items left-to-right and build text
   return lines.map((l) => {
     l.items.sort((a, b) => computeX(a) - computeX(b));
     const text = normalizeSpaces(l.items.map((i) => i.str).join(" "));
     const maxFont = Math.max(...l.items.map(computeFontHeight));
     const minX = Math.min(...l.items.map(computeX));
-    return { pdfY: l.y, minX, maxFont, text, items: l.items };
+    return { pdfY: l.y, minX, maxFont, text };
   });
 }
 
-/**
- * Decide if a line is "header-like" to reduce false positives:
- * - left-ish (near margin)
- * - larger font than typical
- * - short-ish line OR contains header keywords
- */
-function isHeaderLike(
-  line: { text: string; minX: number; maxFont: number },
-  stats: { medianFont: number; pageWidth: number }
-) {
-  const t = line.text;
-  if (!t) return false;
-
-  const leftThreshold = stats.pageWidth * 0.20; // within first 20% width
-  const isLeft = line.minX <= leftThreshold;
-
-  // Be tolerant: if the line contains the keyword anywhere, count it. 
-  // (Because pdf text can be "Que stion", spacing, or centered) 
-  const hasKeyword = /(Question|Answer|Solution)\b/i.test(t) || /\bQ\b/i.test(t); 
-
-  // And if it has the keyword, accept it — you want big blocks anyway. 
-  if (hasKeyword) return true;
-
-  const isBigger = line.maxFont >= stats.medianFont * 1.15; // slightly larger than median
-  const isShort = t.length <= 50;
-
-  // Numeric-only headers are risky — require left + bigger + short
-  const looksNumeric = /^\(?\d{1,3}\)?\s*([.)\-:])/.test(t);
-
-  if (looksNumeric) return isLeft && isBigger && isShort;
-
-  return false;
+// ✅ be tolerant — accept if it contains Question/Q/Answer/Solution anywhere
+function isHeaderLike(text: string) {
+  const t = normalizeSpaces(text);
+  return /(Question|Answer|Solution)\b/i.test(t) || /\bQ\b/i.test(t);
 }
 
 async function renderPageToCanvas(page: any, viewport: any) {
@@ -206,13 +138,13 @@ async function renderPageToCanvas(page: any, viewport: any) {
   return canvas;
 }
 
-async function canvasSliceToBlob(
+async function sliceToBlob(
   canvas: HTMLCanvasElement,
   yStart: number,
   yEnd: number
 ): Promise<Blob | null> {
   const height = Math.max(0, yEnd - yStart);
-  if (height <= 2) return null;
+  if (height <= 4) return null;
 
   const sliceCanvas = document.createElement("canvas");
   sliceCanvas.width = canvas.width;
@@ -220,20 +152,42 @@ async function canvasSliceToBlob(
   const sliceCtx = sliceCanvas.getContext("2d");
   if (!sliceCtx) return null;
 
-  sliceCtx.drawImage(
-    canvas,
-    0,
-    yStart,
-    canvas.width,
-    height,
-    0,
-    0,
-    canvas.width,
-    height
-  );
+  sliceCtx.drawImage(canvas, 0, yStart, canvas.width, height, 0, 0, canvas.width, height);
 
   return await new Promise<Blob | null>((resolve) =>
-    sliceCanvas.toBlob(resolve, "image/jpeg", 0.85)
+    sliceCanvas.toBlob(resolve, "image/jpeg", 0.88)
+  );
+}
+
+/**
+ * ✅ NEW: stitch blobs into ONE tall image (so your UI can keep using imageBlob)
+ */
+async function stitchBlobsVertically(blobs: Blob[]): Promise<Blob | null> {
+  if (!blobs.length) return null;
+  if (blobs.length === 1) return blobs[0];
+
+  const bitmaps = await Promise.all(blobs.map((b) => createImageBitmap(b)));
+  const width = Math.max(...bitmaps.map((b) => b.width));
+  const height = bitmaps.reduce((sum, b) => sum + b.height, 0);
+
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+
+  let y = 0;
+  for (const bmp of bitmaps) {
+    ctx.drawImage(bmp, 0, y);
+    y += bmp.height;
+  }
+
+  // cleanup
+  bitmaps.forEach((b) => b.close?.());
+
+  return await new Promise<Blob | null>((resolve) =>
+    canvas.toBlob(resolve, "image/jpeg", 0.9)
   );
 }
 
@@ -245,142 +199,66 @@ export const parsePdf = async (
   const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
   const pdf = await loadingTask.promise;
 
-  const allQuestions: ExtractedQuestion[] = [];
-
-  // Safety limits for browser/mobile
-  const TEXT_SCALE = 1.6; // good quality for slicing but not too heavy
-  const OCR_SCALE = 1.2; // OCR cheaper
-  const MAX_OCR_PAGES = 6; // prevent freezing on huge scanned PDFs
+  const TEXT_SCALE = 1.6;
+  const OCR_SCALE = 1.2;
+  const MAX_OCR_PAGES = 6;
   let ocrPagesUsed = 0;
+
+  // ✅ collect parts by question number across pages
+  const byQ = new Map<
+    number,
+    {
+      number: number;
+      parts: Blob[];
+      firstPage: number;
+      coords: { yStart: number; yEnd: number };
+    }
+  >();
 
   for (let i = 1; i <= pdf.numPages; i++) {
     if (onProgress) onProgress(`Processing Page ${i} of ${pdf.numPages}...`);
 
     const page = await pdf.getPage(i);
-
-    // We’ll prefer TEXT scale for slicing, but only render once we know we need it
     const viewportText = page.getViewport({ scale: TEXT_SCALE });
 
-    // --- Phase 1: TEXT DETECTION ---
     let headers: DetectedHeader[] = [];
-    let usedMethod: "TEXT" | "OCR" = "TEXT";
 
-    let textItemsCount = 0;
-
+    // --- TEXT DETECTION ---
     try {
       const textContent = await page.getTextContent();
       const items: TextItem[] = (textContent.items || []) as any[];
-      textItemsCount = items.length;
-
-      const fontHeights = items
-        .map(computeFontHeight)
-        .filter((h) => h > 0)
-        .sort((a, b) => a - b);
-      const medianFont =
-        fontHeights.length === 0
-          ? 10
-          : fontHeights[Math.floor(fontHeights.length / 2)];
-
       const lines = groupItemsIntoLines(items);
 
-      const stats = { medianFont, pageWidth: page.view?.[2] ?? 600 };
-
       for (const ln of lines) {
-        const lineText = ln.text;
-        if (!lineText) continue;
-
-        const candidate = matchHeaderNumber(lineText);
+        if (!ln.text) continue;
+        const candidate = matchHeaderNumber(ln.text);
         if (!candidate) continue;
+        if (!isHeaderLike(ln.text)) continue;
 
-        const headerLike = isHeaderLike(
-          { text: lineText, minX: ln.minX, maxFont: ln.maxFont },
-          stats
-        );
-        if (!headerLike) continue;
-
-        const qNum = candidate.q;
-        const yCanvas = pdfYToCanvasY(ln.pdfY, viewportText);
-        const xCanvas = pdfXToCanvasX(ln.minX, viewportText);
-
-        // Confidence scoring
-        let confidence = 0.5;
-        // Big boost if MAIN so it always beats SUB
-        if (candidate.kind === "MAIN") confidence += 0.6;
-
-        if (/^(Question|Q|Answer|Solution)\b/i.test(lineText)) confidence += 0.35;
-        if (ln.maxFont >= stats.medianFont * 1.2) confidence += 0.15;
-        if (ln.minX <= stats.pageWidth * 0.2) confidence += 0.10;
-        confidence = clamp(confidence, 0, 1);
-
-        // Deduplicate by question number: keep the highest confidence (prefer MAIN)
-        const existing = headers.find((h) => h.number === qNum);
-        
-        if (!existing) {
-          headers.push({
-            number: qNum,
-            kind: candidate.kind,
-            yCanvas,
-            xCanvas,
-            confidence,
-            source: "TEXT",
-          });
-        } else {
-          // Prefer MAIN over SUB always
-          const existingScore = existing.confidence + (existing.kind === "MAIN" ? 1 : 0);
-          const newScore = confidence + (candidate.kind === "MAIN" ? 1 : 0);
-
-          if (newScore > existingScore) {
-            headers = headers.filter((h) => h.number !== qNum);
-            headers.push({
-              number: qNum,
-              kind: candidate.kind,
-              yCanvas,
-              xCanvas,
-              confidence,
-              source: "TEXT",
-            });
-          }
-        }
+        headers.push({
+          number: candidate.q,
+          yCanvas: pdfYToCanvasY(ln.pdfY, viewportText),
+          confidence: 0.75,
+          source: "TEXT",
+        });
       }
     } catch (e) {
       console.warn(`Text extraction failed on page ${i}`, e);
     }
 
-    // Sort headers by Y top-to-bottom
     headers.sort((a, b) => a.yCanvas - b.yCanvas);
 
-    // --- Phase 2: OCR fallback (only if needed) ---
-    const shouldOcr =
-      headers.length === 0 &&
-      ocrPagesUsed < MAX_OCR_PAGES;
-
-    let canvasText: HTMLCanvasElement | null = null;
-
-    if (shouldOcr) {
-      usedMethod = "OCR";
+    // --- OCR fallback if no headers ---
+    if (headers.length === 0 && ocrPagesUsed < MAX_OCR_PAGES) {
       ocrPagesUsed++;
-
-      if (onProgress)
-        onProgress(
-          `No reliable headers on Page ${i}. Running OCR (${ocrPagesUsed}/${MAX_OCR_PAGES})...`
-        );
+      if (onProgress) onProgress(`OCR Page ${i}... (${ocrPagesUsed}/${MAX_OCR_PAGES})`);
 
       const viewportOcr = page.getViewport({ scale: OCR_SCALE });
       const canvasOcr = await renderPageToCanvas(page, viewportOcr);
+
       if (canvasOcr) {
         try {
-          const result = await Tesseract.recognize(canvasOcr, "eng", {
-            logger: (m) => {
-              if (onProgress && m.status) {
-                const pct =
-                  typeof m.progress === "number"
-                    ? ` ${(m.progress * 100).toFixed(0)}%`
-                    : "";
-                onProgress(`OCR Page ${i}: ${m.status}${pct}`);
-              }
-            },
-          });
-
+          const result = await Tesseract.recognize(canvasOcr, "eng");
           const ocrLines = (result.data as any)?.lines || [];
 
           for (const line of ocrLines) {
@@ -389,65 +267,19 @@ export const parsePdf = async (
 
             const candidate = matchHeaderNumber(text);
             if (!candidate) continue;
+            if (!isHeaderLike(text)) continue;
 
-            // OCR bounding box
-            const bbox = line.bbox;
-            const x0 = bbox?.x0 ?? 999999;
-            const y0 = bbox?.y0 ?? 999999;
-            const h = (bbox?.y1 ?? 0) - (bbox?.y0 ?? 0);
+            const y0 = line?.bbox?.y0 ?? 999999;
 
-            // Header-like rules for OCR:
-            // - near left margin
-            // - bbox height reasonable (bigger than typical small noise)
-            const isLeft = x0 <= canvasOcr.width * 0.25;
-            const isTall = h >= 14; // tweakable
-            const hasKeyword = /^(Question|Q|Answer|Solution)\b/i.test(text);
-            const looksNumeric = /^\(?\d{1,3}\)?\s*([.)\-:])/.test(text);
-
-            if (hasKeyword ? !(isLeft || isTall) : !(isLeft && isTall && looksNumeric))
-              continue;
-
-            // Convert OCR Y (already top-down in canvas coordinates at OCR scale)
-            // Convert to TEXT canvas scale for slicing consistency:
+            // convert OCR scale -> TEXT scale
             const yCanvasTextScale = (y0 / OCR_SCALE) * TEXT_SCALE;
-            const xCanvasTextScale = (x0 / OCR_SCALE) * TEXT_SCALE;
 
-            let confidence = 0.45;
-            // Big boost if MAIN
-            if (candidate.kind === "MAIN") confidence += 0.6;
-
-            if (hasKeyword) confidence += 0.35;
-            if (isLeft) confidence += 0.10;
-            if (isTall) confidence += 0.10;
-            confidence = clamp(confidence, 0, 1);
-
-            const existing = headers.find((h2) => h2.number === candidate.q);
-            
-            if (!existing) {
-              headers.push({
-                number: candidate.q,
-                kind: candidate.kind,
-                yCanvas: yCanvasTextScale,
-                xCanvas: xCanvasTextScale,
-                confidence,
-                source: "OCR",
-              });
-            } else {
-               const existingScore = existing.confidence + (existing.kind === "MAIN" ? 1 : 0);
-               const newScore = confidence + (candidate.kind === "MAIN" ? 1 : 0);
-
-               if (newScore > existingScore) {
-                 headers = headers.filter((h2) => h2.number !== candidate.q);
-                 headers.push({
-                   number: candidate.q,
-                   kind: candidate.kind,
-                   yCanvas: yCanvasTextScale,
-                   xCanvas: xCanvasTextScale,
-                   confidence,
-                   source: "OCR",
-                 });
-               }
-            }
+            headers.push({
+              number: candidate.q,
+              yCanvas: yCanvasTextScale,
+              confidence: 0.6,
+              source: "OCR",
+            });
           }
 
           headers.sort((a, b) => a.yCanvas - b.yCanvas);
@@ -457,87 +289,146 @@ export const parsePdf = async (
       }
     }
 
-    if (headers.length === 0) {
-      if (onProgress)
-        onProgress(`No questions detected on Page ${i}. Skipping.`);
-      continue;
-    }
+    if (headers.length === 0) continue;
 
-    // --- Phase 3: Render once (TEXT scale) and slice ---
-    canvasText = await renderPageToCanvas(page, viewportText);
+    // --- Render once and slice ---
+    const canvasText = await renderPageToCanvas(page, viewportText);
     if (!canvasText) continue;
 
-    // Clean up: remove headers that are too close to each other (duplicates)
-    // AND prioritize MAIN headers for slicing
-    
-    // 3) Slice using MAIN anchors only (if possible)
-    // If we have MAIN headers, we should primarily use them. 
-    // SUB headers might be useful if we have NO main headers, but generally we want to split by Q1, Q2...
-    
-    const anchors = headers.filter(h => h.kind === "MAIN");
-    // Fallback: if no MAIN headers found, use everything (maybe it's a doc with only "1.1", "1.2")
-    const headersToUse = anchors.length > 0 ? anchors : headers;
-    
-    headersToUse.sort((a, b) => a.yCanvas - b.yCanvas);
-
+    // dedupe close headers on same page
     const deduped: DetectedHeader[] = [];
-    for (const h of headersToUse) {
+    for (const h of headers) {
       const prev = deduped[deduped.length - 1];
-      if (!prev) {
-        deduped.push(h);
-        continue;
-      }
-      // If two headers are within 18px vertically, keep higher confidence
-      if (Math.abs(h.yCanvas - prev.yCanvas) < 18) {
-        if (h.confidence > prev.confidence) {
-          deduped[deduped.length - 1] = h;
-        }
-      } else {
-        deduped.push(h);
-      }
+      if (!prev) deduped.push(h);
+      else if (Math.abs(h.yCanvas - prev.yCanvas) > 18) deduped.push(h);
     }
 
-    // Slice bounds
     for (let j = 0; j < deduped.length; j++) {
       const h = deduped[j];
 
-      // Give padding above header
       const startY = clamp(h.yCanvas - 40, 0, canvasText.height);
-
-      // End at next header minus small gap, else end of page
       let endY = canvasText.height;
+
       if (j < deduped.length - 1) {
         endY = clamp(deduped[j + 1].yCanvas - 16, 0, canvasText.height);
       }
 
-      // Minimum slice height so we don't generate tiny blobs
       if (endY - startY < 40) continue;
 
-      const blob = await canvasSliceToBlob(canvasText, startY, endY);
+      const blob = await sliceToBlob(canvasText, startY, endY);
       if (!blob) continue;
 
-      allQuestions.push({
-        number: h.number,
-        text: `(${usedMethod} detected on Page ${i})`,
-        marks: 0,
-        imageBlob: blob,
-        page: i,
-        // Store coordinates back in "pdf-ish" units if you want.
-        // Here we store canvas-based but normalized by TEXT_SCALE for stability.
-        coordinates: {
-          yStart: startY / TEXT_SCALE,
-          yEnd: endY / TEXT_SCALE,
-        },
-      });
+      const existing = byQ.get(h.number);
+      if (!existing) {
+        byQ.set(h.number, {
+          number: h.number,
+          parts: [blob],
+          firstPage: i,
+          coords: { yStart: startY / TEXT_SCALE, yEnd: endY / TEXT_SCALE },
+        });
+      } else {
+        existing.parts.push(blob);
+        // expand coords end
+        existing.coords.yEnd = Math.max(existing.coords.yEnd, endY / TEXT_SCALE);
+      }
     }
   }
 
-  // Sort overall by question number then page
-  allQuestions.sort((a, b) => (a.number - b.number) || (a.page - b.page));
-  return allQuestions;
+  // ✅ finalize: stitch parts into one imageBlob, but keep parts too
+  const results: ExtractedQuestion[] = [];
+  for (const q of Array.from(byQ.values()).sort((a, b) => a.number - b.number)) {
+    const stitched = await stitchBlobsVertically(q.parts);
+
+    results.push({
+      number: q.number,
+      text: `(Merged question ${q.number})`,
+      marks: 0,
+      imageBlobs: q.parts,
+      imageBlob: stitched ?? q.parts[0],
+      page: q.firstPage,
+      coordinates: q.coords,
+    });
+  }
+
+  return results;
 };
 
-// Deprecated: kept for backward compatibility
-export const extractQuestionsFromText = (_text: string): ExtractedQuestion[] => {
-  return [];
+// Deprecated
+export const extractQuestionsFromText = (_text: string): ExtractedQuestion[] => [];
+
+export const getPageHeight = async (
+  file: File,
+  pageNumber: number,
+  scale: number = 1.6
+): Promise<number> => {
+  const arrayBuffer = await file.arrayBuffer();
+  const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+  const pdf = await loadingTask.promise;
+  const page = await pdf.getPage(pageNumber);
+  const viewport = page.getViewport({ scale });
+  return viewport.height;
+};
+
+export const renderPageToBlob = async (
+  file: File,
+  pageNumber: number,
+  scale: number = 1.6
+): Promise<Blob | null> => {
+  const arrayBuffer = await file.arrayBuffer();
+  const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+  const pdf = await loadingTask.promise;
+  const page = await pdf.getPage(pageNumber);
+  const viewport = page.getViewport({ scale });
+  const canvas = await renderPageToCanvas(page, viewport);
+  if (!canvas) return null;
+  return await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.9));
+};
+
+export const cropRectFromPdf = async (
+  file: File,
+  pageNumber: number,
+  xStartCanvas: number,
+  yStartCanvas: number,
+  widthCanvas: number,
+  heightCanvas: number,
+  scale: number = 1.6
+): Promise<Blob | null> => {
+  const arrayBuffer = await file.arrayBuffer();
+  const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+  const pdf = await loadingTask.promise;
+  const page = await pdf.getPage(pageNumber);
+  const viewport = page.getViewport({ scale });
+  const sourceCanvas = await renderPageToCanvas(page, viewport);
+  if (!sourceCanvas) return null;
+  const x = clamp(xStartCanvas, 0, sourceCanvas.width);
+  const y = clamp(yStartCanvas, 0, sourceCanvas.height);
+  const w = clamp(widthCanvas, 1, sourceCanvas.width - x);
+  const h = clamp(heightCanvas, 1, sourceCanvas.height - y);
+  const out = document.createElement("canvas");
+  out.width = w;
+  out.height = h;
+  const ctx = out.getContext("2d");
+  if (!ctx) return null;
+  ctx.drawImage(sourceCanvas, x, y, w, h, 0, 0, w, h);
+  return await new Promise<Blob | null>((resolve) => out.toBlob(resolve, "image/jpeg", 0.9));
+};
+
+export const stitchBlobs = async (blobs: Blob[]): Promise<Blob | null> => {
+  if (!blobs.length) return null;
+  if (blobs.length === 1) return blobs[0];
+  const bitmaps = await Promise.all(blobs.map((b) => createImageBitmap(b)));
+  const width = Math.max(...bitmaps.map((b) => b.width));
+  const height = bitmaps.reduce((sum, b) => sum + b.height, 0);
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  let y = 0;
+  for (const bmp of bitmaps) {
+    ctx.drawImage(bmp, 0, y);
+    y += bmp.height;
+  }
+  bitmaps.forEach((b) => b.close?.());
+  return await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.9));
 };
