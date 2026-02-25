@@ -35,6 +35,12 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
   const [parsing, setParsing] = useState(false);
   const [parsingStatus, setParsingStatus] = useState('');
 
+  // ✅ Manual crop mode states (NEW)
+  const [manualMode, setManualMode] = useState(false);
+  const [manualDraftNumber, setManualDraftNumber] = useState<number>(1);
+  const [manualDraftMarks, setManualDraftMarks] = useState<number>(0);
+  const [manualDraftOrder, setManualDraftOrder] = useState<number>(1);
+
   // Crop editor states
   const [isCropEditorOpen, setIsCropEditorOpen] = useState(false);
   const [cropTarget, setCropTarget] = useState<'answers' | 'questions'>('answers');
@@ -55,6 +61,16 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
   useEffect(() => {
     fetchQuestions();
   }, [assessmentId]);
+
+  // ✅ Reset manual crop defaults when opening bulk modal (NEW)
+  useEffect(() => {
+    if (isBulkModalOpen) {
+      setManualMode(false);
+      setManualDraftOrder(questions.length > 0 ? questions.length + 1 : 1);
+      setManualDraftNumber(extractedQuestions.length > 0 ? extractedQuestions.length + 1 : 1);
+      setManualDraftMarks(0);
+    }
+  }, [isBulkModalOpen, questions.length, extractedQuestions.length]);
 
   const fetchQuestions = async () => {
     setLoading(true);
@@ -142,12 +158,15 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
       try {
         const parsed = await parsePdf(e.target.files[0], (status) => setParsingStatus(status));
         if (parsed.length === 0) {
-          alert('No questions detected in the PDF. Please ensure the file uses standard headings like "Question 1" or "Q1".');
+          alert('No questions detected in the PDF. You can use Manual Crop Mode to crop questions yourself.');
         }
         setExtractedQuestions(parsed);
+
+        // ✅ update manual number baseline
+        setManualDraftNumber(parsed.length > 0 ? parsed.length + 1 : 1);
       } catch (error) {
         console.error('Error parsing PDF:', error);
-        alert('Failed to parse PDF. Please ensure it is a valid PDF.');
+        alert('Failed to parse PDF. You can still use Manual Crop Mode.');
       } finally {
         setParsing(false);
         setParsingStatus('');
@@ -216,8 +235,31 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
     setIsCropEditorOpen(true);
   };
 
+  // ✅ NEW: manual crop entrypoint even if parser returns []
+  const startManualCrop = async () => {
+    if (!bulkFile) return;
+
+    setCropTarget('questions'); // manual question crop
+    setCropIndex(null); // ✅ null means "manual draft"
+    setCropPageNumber(1);
+
+    const pageBlob = await renderPageToBlob(bulkFile, 1, TEXT_SCALE);
+    const pageUrl = pageBlob ? URL.createObjectURL(pageBlob) : '';
+
+    setCropPageImageUrl(pageUrl);
+    setRectX(0);
+    setRectY(0);
+    setRectW(0);
+    setRectH(220);
+    setSliceBlobs([]);
+    setIsCropEditorOpen(true);
+
+    setManualMode(true);
+  };
+
   const saveCropEdits = async () => {
-    if (cropIndex === null || !bulkFile || !cropPageImageUrl) return;
+    // ✅ allow cropIndex === null for manual mode
+    if (!bulkFile || !cropPageImageUrl) return;
 
     const scaleX =
       cropImgClientW > 0
@@ -248,6 +290,43 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
 
     if (!stitched) {
       setIsCropEditorOpen(false);
+      return;
+    }
+
+    // ✅ MANUAL MODE: create a new extracted question even if parser failed
+    if (cropIndex === null && cropTarget === 'questions') {
+      const yStartPdf = rectY / TEXT_SCALE;
+      const yEndPdf = (rectY + rectH) / TEXT_SCALE;
+
+      const newItem: ExtractedQuestion = {
+        number: manualDraftNumber,
+        marks: manualDraftMarks,
+        text: '(Manual crop)',
+        imageBlobs: all,
+        imageBlob: stitched,
+        page: cropPageNumber,
+        coordinates: { yStart: yStartPdf, yEnd: yEndPdf },
+      };
+
+      setExtractedQuestions((prev) => [...prev, newItem]);
+
+      // advance defaults for next crop
+      setManualDraftNumber((n) => n + 1);
+      setManualDraftOrder((o) => o + 1);
+
+      setIsCropEditorOpen(false);
+      setCropIndex(null);
+      setCropPageImageUrl('');
+      setSliceBlobs([]);
+      return;
+    }
+
+    // existing edit paths
+    if (cropIndex === null) {
+      // if somehow manual mode on answers, just close safely
+      setIsCropEditorOpen(false);
+      setCropPageImageUrl('');
+      setSliceBlobs([]);
       return;
     }
 
@@ -423,6 +502,42 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
           className="mt-1 block w-24 border border-gray-300 rounded-md py-1 px-2 text-sm"
         />
       </div>
+
+      {/* ✅ Manual crop quick fields (NEW, only when manual mode + cropping questions) */}
+      {manualMode && cropTarget === 'questions' && cropIndex === null && (
+        <div className="grid grid-cols-3 gap-3 mb-3">
+          <div>
+            <label className="block text-xs font-semibold text-gray-700">Question #</label>
+            <input
+              type="number"
+              min={1}
+              value={manualDraftNumber}
+              onChange={(e) => setManualDraftNumber(parseInt(e.target.value) || 1)}
+              className="mt-1 w-full border border-gray-300 rounded-md py-1 px-2 text-sm"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-gray-700">Marks</label>
+            <input
+              type="number"
+              min={0}
+              value={manualDraftMarks}
+              onChange={(e) => setManualDraftMarks(parseInt(e.target.value) || 0)}
+              className="mt-1 w-full border border-gray-300 rounded-md py-1 px-2 text-sm"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-gray-700">Order (next)</label>
+            <input
+              type="number"
+              min={1}
+              value={manualDraftOrder}
+              onChange={(e) => setManualDraftOrder(parseInt(e.target.value) || 1)}
+              className="mt-1 w-full border border-gray-300 rounded-md py-1 px-2 text-sm"
+            />
+          </div>
+        </div>
+      )}
 
       <div
         className="relative border rounded bg-white overflow-auto max-h-[60vh]"
@@ -1030,6 +1145,59 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
                     <div className="text-center py-4 text-green-600 font-medium">
                       <div className="animate-pulse">{parsingStatus || 'Parsing PDF...'}</div>
                       <p className="text-xs text-gray-500 mt-1">OCR is running, this may take a minute...</p>
+                    </div>
+                  )}
+
+                  {/* ✅ NEW: Manual Crop Mode panel */}
+                  {bulkFile && !parsing && (
+                    <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <div className="text-sm font-semibold text-blue-900">Manual Crop Mode</div>
+                          <div className="text-xs text-blue-800">
+                            Use this when parser fails. Crop questions from any page and save them as extracted items.
+                          </div>
+                        </div>
+                        <button
+                          onClick={startManualCrop}
+                          className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm"
+                        >
+                          Crop a Question
+                        </button>
+                      </div>
+
+                      <div className="grid grid-cols-3 gap-3 mt-3">
+                        <div>
+                          <label className="text-xs text-gray-700 font-semibold">Next Question #</label>
+                          <input
+                            type="number"
+                            min={1}
+                            value={manualDraftNumber}
+                            onChange={(e) => setManualDraftNumber(parseInt(e.target.value) || 1)}
+                            className="mt-1 w-full border border-gray-300 rounded px-2 py-1 text-sm"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-xs text-gray-700 font-semibold">Marks</label>
+                          <input
+                            type="number"
+                            min={0}
+                            value={manualDraftMarks}
+                            onChange={(e) => setManualDraftMarks(parseInt(e.target.value) || 0)}
+                            className="mt-1 w-full border border-gray-300 rounded px-2 py-1 text-sm"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-xs text-gray-700 font-semibold">Order (next)</label>
+                          <input
+                            type="number"
+                            min={1}
+                            value={manualDraftOrder}
+                            onChange={(e) => setManualDraftOrder(parseInt(e.target.value) || 1)}
+                            className="mt-1 w-full border border-gray-300 rounded px-2 py-1 text-sm"
+                          />
+                        </div>
+                      </div>
                     </div>
                   )}
 
