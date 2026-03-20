@@ -1,37 +1,25 @@
-import React, { useEffect } from 'react';
-import { Navigate } from 'react-router-dom';
-import { useAuthStore } from '../store/authStore';
-import { onAuthStateChanged } from 'firebase/auth';
-import { auth } from '../lib/firebase';
+// src/components/ProtectedRoute.tsx
+import React, { useEffect } from "react";
+import { Navigate } from "react-router-dom";
+import { onAuthStateChanged } from "firebase/auth";
+import { auth } from "../lib/firebase";
+import { useAuthStore } from "../store/authStore";
 
-const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
-  const { user, loading, setUser, setLoading, checkUserRole } = useAuthStore();
+export default function ProtectedRoute({ children }: { children: React.ReactNode }) {
+  const { user, adminProfile, loading, setUser, setLoading, checkUserRole } = useAuthStore();
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
-      setUser(currentUser);
-      if (currentUser) {
-        await checkUserRole(currentUser.uid);
-      }
+    const unsub = onAuthStateChanged(auth, async (u) => {
+      setUser(u);
+      if (u) await checkUserRole(u.uid);
       setLoading(false);
     });
-
-    return () => unsubscribe();
+    return () => unsub();
   }, [setUser, setLoading, checkUserRole]);
 
-  if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50">
-        <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500"></div>
-      </div>
-    );
-  }
-
-  if (!user) {
-    return <Navigate to="/login" replace />;
-  }
+  if (loading) return <div className="min-h-screen grid place-items-center">Loading…</div>;
+  if (!user) return <Navigate to="/login" replace />;
+  if (!adminProfile) return <Navigate to="/login" replace />; // or /not-authorized
 
   return <>{children}</>;
-};
-
-export default ProtectedRoute;
+}

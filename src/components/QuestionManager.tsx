@@ -72,6 +72,16 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
     }
   }, [isBulkModalOpen, questions.length, extractedQuestions.length]);
 
+  // ✅ Reset manual defaults when opening memo modal too (NEW)
+  useEffect(() => {
+    if (isBulkMemoModalOpen) {
+      setManualMode(false);
+      setManualDraftNumber(extractedAnswers.length > 0 ? extractedAnswers.length + 1 : 1);
+      setManualDraftMarks(0);
+      setManualDraftOrder(questions.length > 0 ? questions.length + 1 : 1);
+    }
+  }, [isBulkMemoModalOpen, extractedAnswers.length, questions.length]);
+
   const fetchQuestions = async () => {
     setLoading(true);
     try {
@@ -182,12 +192,15 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
       try {
         const parsed = await parsePdf(e.target.files[0], (status) => setParsingStatus(status));
         if (parsed.length === 0) {
-          alert('No answers detected in the Memo PDF. Please ensure the file uses "Question 1" or "Answer 1" headings.');
+          alert('No answers detected in the Memo PDF. You can use Manual Crop Mode to crop answers yourself.');
         }
         setExtractedAnswers(parsed);
+
+        // ✅ update manual number baseline for memo too
+        setManualDraftNumber(parsed.length > 0 ? parsed.length + 1 : 1);
       } catch (error) {
         console.error('Error parsing Memo PDF:', error);
-        alert('Failed to parse Memo PDF.');
+        alert('Failed to parse Memo PDF. You can still use Manual Crop Mode.');
       } finally {
         setParsing(false);
         setParsingStatus('');
@@ -235,12 +248,34 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
     setIsCropEditorOpen(true);
   };
 
-  // ✅ NEW: manual crop entrypoint even if parser returns []
-  const startManualCrop = async () => {
+  // ✅ NEW: manual crop entrypoint for QUESTIONS
+  const startManualCropQuestion = async () => {
     if (!bulkFile) return;
 
-    setCropTarget('questions'); // manual question crop
-    setCropIndex(null); // ✅ null means "manual draft"
+    setCropTarget('questions');
+    setCropIndex(null);
+    setCropPageNumber(1);
+
+    const pageBlob = await renderPageToBlob(bulkFile, 1, TEXT_SCALE);
+    const pageUrl = pageBlob ? URL.createObjectURL(pageBlob) : '';
+
+    setCropPageImageUrl(pageUrl);
+    setRectX(0);
+    setRectY(0);
+    setRectW(0);
+    setRectH(220);
+    setSliceBlobs([]);
+    setIsCropEditorOpen(true);
+
+    setManualMode(true);
+  };
+
+  // ✅ NEW: manual crop entrypoint for ANSWERS (memo)
+  const startManualCropAnswer = async () => {
+    if (!bulkFile) return;
+
+    setCropTarget('answers');
+    setCropIndex(null);
     setCropPageNumber(1);
 
     const pageBlob = await renderPageToBlob(bulkFile, 1, TEXT_SCALE);
@@ -293,37 +328,61 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
       return;
     }
 
-    // ✅ MANUAL MODE: create a new extracted question even if parser failed
-    if (cropIndex === null && cropTarget === 'questions') {
+    // ✅ MANUAL MODE: create a new extracted item even if parser failed
+    if (cropIndex === null) {
       const yStartPdf = rectY / TEXT_SCALE;
       const yEndPdf = (rectY + rectH) / TEXT_SCALE;
 
-      const newItem: ExtractedQuestion = {
-        number: manualDraftNumber,
-        marks: manualDraftMarks,
-        text: '(Manual crop)',
-        imageBlobs: all,
-        imageBlob: stitched,
-        page: cropPageNumber,
-        coordinates: { yStart: yStartPdf, yEnd: yEndPdf },
-      };
+      if (cropTarget === 'questions') {
+        const newItem: ExtractedQuestion = {
+          number: manualDraftNumber,
+          marks: manualDraftMarks,
+          text: '(Manual crop)',
+          imageBlobs: all,
+          imageBlob: stitched,
+          page: cropPageNumber,
+          coordinates: { yStart: yStartPdf, yEnd: yEndPdf },
+        };
 
-      setExtractedQuestions((prev) => [...prev, newItem]);
+        setExtractedQuestions((prev) => [...prev, newItem]);
 
-      // advance defaults for next crop
-      setManualDraftNumber((n) => n + 1);
-      setManualDraftOrder((o) => o + 1);
+        // advance defaults for next crop
+        setManualDraftNumber((n) => n + 1);
+        setManualDraftOrder((o) => o + 1);
 
-      setIsCropEditorOpen(false);
-      setCropIndex(null);
-      setCropPageImageUrl('');
-      setSliceBlobs([]);
-      return;
+        setIsCropEditorOpen(false);
+        setCropIndex(null);
+        setCropPageImageUrl('');
+        setSliceBlobs([]);
+        return;
+      }
+
+      if (cropTarget === 'answers') {
+        const newAns: ExtractedQuestion = {
+          number: manualDraftNumber, // question number to match against Question 1,2,3...
+          marks: 0,
+          text: '(Manual answer crop)',
+          imageBlobs: all,
+          imageBlob: stitched,
+          page: cropPageNumber,
+          coordinates: { yStart: yStartPdf, yEnd: yEndPdf },
+        };
+
+        setExtractedAnswers((prev) => [...prev, newAns]);
+
+        // advance defaults for next answer crop
+        setManualDraftNumber((n) => n + 1);
+
+        setIsCropEditorOpen(false);
+        setCropIndex(null);
+        setCropPageImageUrl('');
+        setSliceBlobs([]);
+        return;
+      }
     }
 
     // existing edit paths
     if (cropIndex === null) {
-      // if somehow manual mode on answers, just close safely
       setIsCropEditorOpen(false);
       setCropPageImageUrl('');
       setSliceBlobs([]);
@@ -503,38 +562,53 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
         />
       </div>
 
-      {/* ✅ Manual crop quick fields (NEW, only when manual mode + cropping questions) */}
-      {manualMode && cropTarget === 'questions' && cropIndex === null && (
-        <div className="grid grid-cols-3 gap-3 mb-3">
-          <div>
-            <label className="block text-xs font-semibold text-gray-700">Question #</label>
-            <input
-              type="number"
-              min={1}
-              value={manualDraftNumber}
-              onChange={(e) => setManualDraftNumber(parseInt(e.target.value) || 1)}
-              className="mt-1 w-full border border-gray-300 rounded-md py-1 px-2 text-sm"
-            />
-          </div>
-          <div>
-            <label className="block text-xs font-semibold text-gray-700">Marks</label>
-            <input
-              type="number"
-              min={0}
-              value={manualDraftMarks}
-              onChange={(e) => setManualDraftMarks(parseInt(e.target.value) || 0)}
-              className="mt-1 w-full border border-gray-300 rounded-md py-1 px-2 text-sm"
-            />
-          </div>
-          <div>
-            <label className="block text-xs font-semibold text-gray-700">Order (next)</label>
-            <input
-              type="number"
-              min={1}
-              value={manualDraftOrder}
-              onChange={(e) => setManualDraftOrder(parseInt(e.target.value) || 1)}
-              className="mt-1 w-full border border-gray-300 rounded-md py-1 px-2 text-sm"
-            />
+      {/* ✅ Manual crop quick fields (NEW) */}
+      {manualMode && cropIndex === null && (
+        <div className="mb-3">
+          <div className="grid grid-cols-3 gap-3">
+            <div>
+              <label className="block text-xs font-semibold text-gray-700">
+                {cropTarget === 'answers' ? 'Answer for Question #' : 'Question #'}
+              </label>
+              <input
+                type="number"
+                min={1}
+                value={manualDraftNumber}
+                onChange={(e) => setManualDraftNumber(parseInt(e.target.value) || 1)}
+                className="mt-1 w-full border border-gray-300 rounded-md py-1 px-2 text-sm"
+              />
+            </div>
+
+            {cropTarget === 'questions' ? (
+              <>
+                <div>
+                  <label className="block text-xs font-semibold text-gray-700">Marks</label>
+                  <input
+                    type="number"
+                    min={0}
+                    value={manualDraftMarks}
+                    onChange={(e) => setManualDraftMarks(parseInt(e.target.value) || 0)}
+                    className="mt-1 w-full border border-gray-300 rounded-md py-1 px-2 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-gray-700">Order (next)</label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={manualDraftOrder}
+                    onChange={(e) => setManualDraftOrder(parseInt(e.target.value) || 1)}
+                    className="mt-1 w-full border border-gray-300 rounded-md py-1 px-2 text-sm"
+                  />
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="col-span-2 text-xs text-gray-600 flex items-end">
+                  Tip: Set this to the question number so “Match & Save Answers” attaches it correctly.
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}
@@ -936,6 +1010,42 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
                     </div>
                   )}
 
+                  {/* ✅ NEW: Manual Crop Mode for Answers */}
+                  {bulkFile && !parsing && (
+                    <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <div className="text-sm font-semibold text-blue-900">Manual Crop Mode (Answers)</div>
+                          <div className="text-xs text-blue-800">
+                            If memo parsing fails, crop answers manually and then click “Match & Save Answers”.
+                          </div>
+                        </div>
+                        <button
+                          onClick={startManualCropAnswer}
+                          className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm"
+                        >
+                          Crop an Answer
+                        </button>
+                      </div>
+
+                      <div className="grid grid-cols-3 gap-3 mt-3">
+                        <div>
+                          <label className="text-xs text-gray-700 font-semibold">Next Answer for Question #</label>
+                          <input
+                            type="number"
+                            min={1}
+                            value={manualDraftNumber}
+                            onChange={(e) => setManualDraftNumber(parseInt(e.target.value) || 1)}
+                            className="mt-1 w-full border border-gray-300 rounded px-2 py-1 text-sm"
+                          />
+                        </div>
+                        <div className="col-span-2 text-xs text-gray-600 flex items-end">
+                          Set this to the same question number so it attaches correctly.
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
                   {/* ✅ Crop Editor (shared) */}
                   {CropEditor}
 
@@ -1148,7 +1258,7 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
                     </div>
                   )}
 
-                  {/* ✅ NEW: Manual Crop Mode panel */}
+                  {/* ✅ Manual Crop Mode panel */}
                   {bulkFile && !parsing && (
                     <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
                       <div className="flex items-center justify-between">
@@ -1159,7 +1269,7 @@ const QuestionManager = ({ assessmentId, assessmentTitle, onClose }: QuestionMan
                           </div>
                         </div>
                         <button
-                          onClick={startManualCrop}
+                          onClick={startManualCropQuestion}
                           className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm"
                         >
                           Crop a Question
