@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Trash2, FileText, ExternalLink, List, FileQuestion } from 'lucide-react';
+import { Plus, Trash2, FileText, List, Upload } from 'lucide-react';
 import { Assessment, AssessmentType, Module, University } from '../types';
 import { getAssessments, addAssessment, deleteAssessment } from '../services/assessmentService';
 import { getUniversities } from '../services/universityService';
@@ -7,6 +7,7 @@ import { getModulesByUniversity } from '../services/moduleService';
 import { useAuthStore } from '../store/authStore';
 import Modal from './Modal';
 import QuestionManager from './QuestionManager';
+import BulkPaperUpload from './BulkPaperUpload';
 
 interface AssessmentManagerProps {
   type: AssessmentType;
@@ -22,25 +23,22 @@ const AssessmentManager = ({ type, title }: AssessmentManagerProps) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [assessments, setAssessments] = useState<Assessment[]>([]);
   const [showDropdown, setShowDropdown] = useState(false);
+  const [showBulkUpload, setShowBulkUpload] = useState(false);
 
   useEffect(() => {
     if (selectedModuleId) {
-       // When selected, keep the name in the search box but close dropdown
-       // We can't easily map ID back to name without finding it, but that's fine
-       setShowDropdown(false);
+      setShowDropdown(false);
     }
   }, [selectedModuleId]);
 
-  // Update dropdown visibility when searching
   useEffect(() => {
-    // Show dropdown if there is a search term OR if the field is focused (handled by onFocus)
-    // Here we just ensure it hides if search term is cleared while not selected
     if (!searchTerm && !selectedModuleId) {
-        setShowDropdown(false);
+      setShowDropdown(false);
     } else if (searchTerm && !selectedModuleId) {
-        setShowDropdown(true);
+      setShowDropdown(true);
     }
   }, [searchTerm, selectedModuleId]);
+
   const [loading, setLoading] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -72,7 +70,7 @@ const AssessmentManager = ({ type, title }: AssessmentManagerProps) => {
         try {
           const data = await getModulesByUniversity(selectedUniversityId);
           setModules(data);
-          setSelectedModuleId(''); // Reset selection on uni change
+          setSelectedModuleId('');
           setSearchTerm('');
           setAssessments([]);
         } catch (error) {
@@ -143,16 +141,17 @@ const AssessmentManager = ({ type, title }: AssessmentManagerProps) => {
     }
   };
 
-  const filteredModules = searchTerm 
-    ? modules.filter(mod => 
-        mod.code.toLowerCase().includes(searchTerm.toLowerCase()) || 
-        mod.name.toLowerCase().includes(searchTerm.toLowerCase())
+  const filteredModules = searchTerm
+    ? modules.filter(
+        (mod) =>
+          mod.code.toLowerCase().includes(searchTerm.toLowerCase()) ||
+          mod.name.toLowerCase().includes(searchTerm.toLowerCase())
       )
     : [];
 
   const handleModuleSelect = (code: string) => {
     setSelectedModuleId(code);
-    setSearchTerm(''); // Clear search term to allow clear button to show
+    setSearchTerm('');
     setShowDropdown(false);
   };
 
@@ -175,14 +174,28 @@ const AssessmentManager = ({ type, title }: AssessmentManagerProps) => {
 
       <div className="flex justify-between items-center mb-6">
         <h1 className="text-2xl font-bold text-gray-900">{title}</h1>
-        <button
-          onClick={handleOpenModal}
-          disabled={!selectedUniversityId || !selectedModuleId}
-          className={`bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg flex items-center space-x-2 ${(!selectedUniversityId || !selectedModuleId) ? 'opacity-50 cursor-not-allowed' : ''}`}
-        >
-          <Plus className="h-5 w-5" />
-          <span>Create {title.slice(0, -1)}</span>
-        </button>
+        <div className="flex items-center space-x-3">
+          <button
+            onClick={() => setShowBulkUpload(true)}
+            disabled={!selectedUniversityId || !selectedModuleId}
+            className={`bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg flex items-center space-x-2 ${
+              !selectedUniversityId || !selectedModuleId ? 'opacity-50 cursor-not-allowed' : ''
+            }`}
+          >
+            <Upload className="h-5 w-5" />
+            <span>Bulk Upload Papers</span>
+          </button>
+          <button
+            onClick={handleOpenModal}
+            disabled={!selectedUniversityId || !selectedModuleId}
+            className={`bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg flex items-center space-x-2 ${
+              !selectedUniversityId || !selectedModuleId ? 'opacity-50 cursor-not-allowed' : ''
+            }`}
+          >
+            <Plus className="h-5 w-5" />
+            <span>Create {title.slice(0, -1)}</span>
+          </button>
+        </div>
       </div>
 
       <div className="bg-white rounded-xl shadow-sm mb-6">
@@ -203,50 +216,54 @@ const AssessmentManager = ({ type, title }: AssessmentManagerProps) => {
           </div>
           <div className="flex-1">
             <label className="block text-sm font-medium text-gray-700 mb-1">Search Module</label>
-              {selectedModuleId ? (
-                 <div className="p-2 bg-blue-50 text-blue-800 rounded text-sm flex justify-between items-center border border-blue-200">
-                   <span>Selected: <strong>{selectedModuleId}</strong></span>
-                   <button onClick={handleClearSelection} className="text-blue-500 hover:text-blue-700 font-medium">Change</button>
-                 </div>
-              ) : (
-                <div className="relative">
-                  <input
-                    type="text"
-                    placeholder="Type to search (e.g. SMTH011)..."
-                    value={searchTerm}
-                    onChange={(e) => {
-                        setSearchTerm(e.target.value);
-                        setShowDropdown(true); // Force show on type
-                    }}
-                    onFocus={() => { 
-                        // Show if we have text, or even if empty if you want to show all
-                        if (filteredModules.length > 0) setShowDropdown(true); 
-                    }}
-                    // Optional: onBlur logic to hide dropdown (needs delay to allow click)
-                    className="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
-                  />
-                  
-                  {showDropdown && (
-                    <div className="absolute z-50 mt-1 w-full bg-white shadow-lg max-h-60 rounded-md py-1 text-base ring-1 ring-black ring-opacity-5 overflow-auto focus:outline-none sm:text-sm">
-                      {filteredModules.length === 0 ? (
-                        <div className="cursor-default select-none relative py-2 px-4 text-gray-500 italic">
-                          {searchTerm ? 'No matching modules found' : 'Type to search...'}
+            {selectedModuleId ? (
+              <div className="p-2 bg-blue-50 text-blue-800 rounded text-sm flex justify-between items-center border border-blue-200">
+                <span>
+                  Selected: <strong>{selectedModuleId}</strong>
+                </span>
+                <button
+                  onClick={handleClearSelection}
+                  className="text-blue-500 hover:text-blue-700 font-medium"
+                >
+                  Change
+                </button>
+              </div>
+            ) : (
+              <div className="relative">
+                <input
+                  type="text"
+                  placeholder="Type to search (e.g. SMTH011)..."
+                  value={searchTerm}
+                  onChange={(e) => {
+                    setSearchTerm(e.target.value);
+                    setShowDropdown(true);
+                  }}
+                  onFocus={() => {
+                    if (filteredModules.length > 0) setShowDropdown(true);
+                  }}
+                  className="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                />
+                {showDropdown && (
+                  <div className="absolute z-50 mt-1 w-full bg-white shadow-lg max-h-60 rounded-md py-1 text-base ring-1 ring-black ring-opacity-5 overflow-auto focus:outline-none sm:text-sm">
+                    {filteredModules.length === 0 ? (
+                      <div className="cursor-default select-none relative py-2 px-4 text-gray-500 italic">
+                        {searchTerm ? 'No matching modules found' : 'Type to search...'}
+                      </div>
+                    ) : (
+                      filteredModules.map((mod) => (
+                        <div
+                          key={mod.moduleId}
+                          className="cursor-pointer select-none relative py-2 px-4 hover:bg-blue-50 text-gray-900"
+                          onClick={() => handleModuleSelect(mod.code)}
+                        >
+                          <span className="font-medium">{mod.code}</span> - {mod.name}
                         </div>
-                      ) : (
-                        filteredModules.map((mod) => (
-                          <div
-                            key={mod.moduleId}
-                            className="cursor-pointer select-none relative py-2 px-4 hover:bg-blue-50 text-gray-900"
-                            onClick={() => handleModuleSelect(mod.code)}
-                          >
-                            <span className="font-medium">{mod.code}</span> - {mod.name}
-                          </div>
-                        ))
-                      )}
-                    </div>
-                  )}
-                </div>
-              )}
+                      ))
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -265,7 +282,9 @@ const AssessmentManager = ({ type, title }: AssessmentManagerProps) => {
             <tbody className="divide-y divide-gray-100">
               {loading ? (
                 <tr>
-                  <td colSpan={4} className="px-6 py-4 text-center text-gray-500">Loading...</td>
+                  <td colSpan={4} className="px-6 py-4 text-center text-gray-500">
+                    Loading...
+                  </td>
                 </tr>
               ) : assessments.length === 0 ? (
                 <tr>
@@ -351,7 +370,9 @@ const AssessmentManager = ({ type, title }: AssessmentManagerProps) => {
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700">Full Paper PDF (Optional)</label>
-            <p className="text-xs text-gray-500 mb-1">Upload the full paper if you have it, otherwise you can add questions individually later.</p>
+            <p className="text-xs text-gray-500 mb-1">
+              Upload the full paper if you have it, otherwise you can add questions individually later.
+            </p>
             <input
               type="file"
               accept=".pdf"
@@ -363,13 +384,29 @@ const AssessmentManager = ({ type, title }: AssessmentManagerProps) => {
             <button
               type="submit"
               disabled={submitting}
-              className={`w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-blue-600 text-base font-medium text-white hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 sm:text-sm ${submitting ? 'opacity-75 cursor-not-allowed' : ''}`}
+              className={`w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-blue-600 text-base font-medium text-white hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 sm:text-sm ${
+                submitting ? 'opacity-75 cursor-not-allowed' : ''
+              }`}
             >
               {submitting ? 'Creating...' : 'Create Assessment'}
             </button>
           </div>
         </form>
       </Modal>
+
+      {showBulkUpload && (
+        <BulkPaperUpload
+          universityId={selectedUniversityId}
+          moduleId={selectedModuleId}
+          type={type}
+          createdBy={user?.email || 'Admin'}
+          onClose={() => setShowBulkUpload(false)}
+          onComplete={() => {
+            setShowBulkUpload(false);
+            fetchAssessments();
+          }}
+        />
+      )}
     </div>
   );
 };

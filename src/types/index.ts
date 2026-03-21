@@ -1,3 +1,9 @@
+/**
+ * INSTRUCTIONS:
+ * Replace the contents of src/types/index.ts with this file.
+ * Only the Question interface has new fields — everything else is unchanged.
+ */
+
 import { Timestamp } from 'firebase/firestore';
 
 export interface University {
@@ -20,12 +26,12 @@ export type AssessmentType = 'exam' | 'test' | 'supplementary';
 
 export interface Assessment {
   assessmentId: string;
-  moduleId: string; // This now stores the module code (e.g., "SMTH011") instead of the document ID
+  moduleId: string;
   universityId: string;
   type: AssessmentType;
   title: string;
   year: number;
-  pdfUrl?: string; // Made optional as we might have question-based assessments only
+  pdfUrl?: string;
   createdAt: Timestamp;
   createdBy: string;
 }
@@ -33,19 +39,24 @@ export interface Assessment {
 export interface Question {
   questionId: string;
   title: string;
-  contentUrl?: string; // Image URL of the question (optional if content is provided)
-  content?: string;    // Text content of the question
-  answerUrl?: string;  // Image URL of the answer (optional)
-  answerText?: string; // Text content of the answer (optional)
-  videoUrl?: string;   // YouTube/Vimeo link (optional)
+  contentUrl?: string;
+  content?: string;
+  answerUrl?: string;
+  answerText?: string;        // existing
+  aiAnswerText?: string;      // ✅ NEW: AI-generated answer (before teacher verification)
+  aiAnswerVerified?: boolean; // ✅ NEW: true once teacher approves/edits
+  videoUrl?: string;
   marks: number;
   order: number;
-  // New fields for PDF parsing
-  page?: number;       // Page number in the original PDF
-  coordinates?: {      // Coordinates for rendering/cropping
+  page?: number;
+  coordinates?: {
     yStart: number;
     yEnd: number;
   };
+  // ✅ NEW: Topic classification fields
+  primaryTopic?: string;      // e.g. "Algebra"
+  subTopic?: string;          // e.g. "Quadratic equations"
+  topicConfidence?: number;   // 0–1, how confident the AI classifier was
   createdAt: Timestamp;
 }
 
